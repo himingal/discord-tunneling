@@ -1,3 +1,5 @@
+<img src="./discord-tunneling-readme-banner.png" width="100%" alt="Discord Single-Tunneling" />
+
 # Discord Single-Tunneling
 
 made by **mingal**
@@ -87,6 +89,20 @@ entire network instead.
 **Never commit your `.conf` file or the generated `config.json`** —
 they contain your VPN's private key. This repo's `.gitignore` already
 excludes them, but double-check before pushing if you copy files around.
+
+## Author
+
+<table>
+<tr>
+<td><img src="./avatar.png" width="72" height="72" alt="mingal" /></td>
+<td>
+
+### mingal
+Discord: `mingalmingalmingal`
+
+</td>
+</tr>
+</table>
 
 ## License
 
