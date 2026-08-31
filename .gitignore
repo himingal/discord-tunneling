@@ -1,0 +1,15 @@
+# Generated at runtime - NEVER commit these (they contain your VPN private key!)
+config.json
+*.conf
+iniciar.vbs
+sing-box.exe
+singbox_temp*/
+singbox_temp.zip
+
+# Inno Setup build output
+output/
+*.exe
+
+# OS junk
+Thumbs.db
+.DS_Store
