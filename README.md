@@ -84,12 +84,6 @@ voice/video sessions may not. If you need a guaranteed 100% tunnel,
 run Discord inside a lightweight VM with the VPN configured for its
 entire network instead.
 
-## Security note
-
-**Never commit your `.conf` file or the generated `config.json`** —
-they contain your VPN's private key. This repo's `.gitignore` already
-excludes them, but double-check before pushing if you copy files around.
-
 ## Author
 
 <table>
