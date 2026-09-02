@@ -2,8 +2,6 @@
 
 # Discord Single-Tunneling
 
-made by **mingal**
-
 Route only Discord's traffic through a WireGuard VPN, while the rest of
 your system keeps using your normal internet connection. Built to work
 around Discord's Go Live / camera restriction in regions where it's
