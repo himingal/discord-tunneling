@@ -1,4 +1,5 @@
-<img src="./discord-tunneling-readme-banner.png" width="100%" alt="Discord Single-Tunneling" />
+<img width="1200" height="630" alt="discord-tunneling-readme-banner" src="https://github.com/user-attachments/assets/7c14a907-2248-4476-bf39-d6f3b93d6d24" />
+
 
 # Discord Single-Tunneling
 
@@ -86,7 +87,7 @@ entire network instead.
 
 <table>
 <tr>
-<td><img src="./avatar.png" width="72" height="72" alt="mingal" /></td>
+<td><img width="72" height="72" alt="avatar" src="https://github.com/user-attachments/assets/e49fd325-aa4d-407b-9a84-8f225e6f4c68" /></td>
 <td>
 
 ### mingal
