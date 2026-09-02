@@ -37,7 +37,7 @@ Discord.exe --proxy-server=socks5://127.0.0.1:1080
 
 1. Download your `.conf` file from your VPN provider's dashboard
    (look for "WireGuard configuration" under Downloads/Account).
-2. Run `instalador_completo.ps1` (double-click, or right-click → Run with PowerShell).
+2. Run `installer.ps1` (double-click, or right-click → Run with PowerShell).
    A small app window opens — no console/terminal is shown.
 3. Check or uncheck "Start automatically when Windows starts".
 4. Click **Select VPN config file & Install** and choose your `.conf` file.

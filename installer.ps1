@@ -34,9 +34,9 @@ $LogGray     = [System.Drawing.Color]::FromArgb(120, 120, 125)
 $InfoBoxBg   = [System.Drawing.Color]::FromArgb(252, 235, 244)
 $InfoBoxText = [System.Drawing.Color]::FromArgb(150, 45, 100)
 
-$iconPath = Join-Path $base "app.ico"
-$logoPngPath = Join-Path $base "app_logo.png"
-$avatarPath = Join-Path $base "avatar.png"
+$iconPath = Join-Path $base "assets\app.ico"
+$logoPngPath = Join-Path $base "assets\app_logo.png"
+$avatarPath = Join-Path $base "assets\avatar.png"
 $appIcon = $null
 if (Test-Path $iconPath) { $appIcon = New-Object System.Drawing.Icon($iconPath) }
 
@@ -398,7 +398,7 @@ function New-DiscordShortcut {
     $shortcut.TargetPath = $discordUpdate
     $shortcut.Arguments = '--processStart Discord.exe --process-start-args="--proxy-server=socks5://127.0.0.1:1080"'
     $shortcut.WorkingDirectory = Join-Path $env:LOCALAPPDATA "Discord"
-    $customIcon = Join-Path $base "app.ico"
+    $customIcon = Join-Path $base "assets\app.ico"
     if (Test-Path $customIcon) { $shortcut.IconLocation = $customIcon } else { $shortcut.IconLocation = $discordUpdate }
     $shortcut.Save()
     Set-Progress "Desktop shortcut created." $LogGreen
