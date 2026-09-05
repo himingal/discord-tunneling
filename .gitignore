@@ -1,6 +1,7 @@
 # Generated at runtime - NEVER commit these (they contain your VPN private key!)
 config.json
 discord-tunneling-android.json
+discord-waiter.ps1
 *.conf
 iniciar.vbs
 tunnel-launcher.ps1

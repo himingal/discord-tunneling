@@ -11,6 +11,8 @@ and without slowing down the rest of your PC.
 
 Voice, video and screen share included — not just chat.
 
+**Windows desktop only.**
+
 ## What you need
 
 - **Windows 10 or 11**
@@ -179,121 +181,10 @@ the same tunnel.
 - **Any Discord window is tunneled while the tunnel runs.** Matching is by
   process name, not by a launch flag, so there's no separate "untunneled"
   Discord on the same PC.
-- **iOS isn't possible.** Android is — see below.
+- **Windows only.** This is a desktop tool and doesn't cover phones.
 - If you need guaranteed 100% tunneling for non-Discord traffic too, or would
   rather not grant admin rights, run Discord in a lightweight VM with the VPN
   applied to its whole network instead.
-
-## Android
-
-Your phone gets the same split tunnel, from the same `.conf` — and there's
-nothing to configure once it's imported.
-
-Click **"On Android too? Get the config for your phone"** in the desktop app and
-pick the phone's own `.conf`. It writes
-**`discord-tunneling-android.json`**: a complete sing-box profile with Discord
-already set as the only app routed through the tunnel. Scan a QR on the PC and
-the phone gets it over your own Wi-Fi — no file to copy, and nothing to
-configure after importing.
-
-> The profile contains your VPN private key, same as the desktop config. The
-> handoff below keeps it on your local network; if you move the file around by
-> hand instead, treat it like a password.
-
-### Why there's no APK
-
-There isn't one, and adding one wouldn't help. Android sandboxing stops any app
-from writing into sing-box's private storage, so an "installer app" would have
-to *be* a VPN client — a fork of sing-box carrying your keys, unsigned and
-outside Play Store review. sing-box already registers a
-`sing-box://import-remote-profile` URL scheme, which is why a tap on a local
-web page does the same job with software you can verify.
-
-> **Your phone needs a second `.conf`, not the PC's.** WireGuard identifies a
-> peer by its key and the VPN server keeps one session per key, so two devices
-> sharing a config make the server hand the session back and forth between
-> them — Discord looks connected but calls won't go through. Proton VPN lets
-> you create several configs from the same free account; download another one
-> for the phone. The app checks and refuses the PC's config if you pick it by
-> mistake.
-
-### Step 1 — Install sing-box on the phone
-
-Get **sing-box** from
-[Google Play](https://play.google.com/store/apps/details?id=io.nekohasekai.sfa)
-or [F-Droid](https://f-droid.org/en/packages/io.nekohasekai.sfa/).
-
-### Step 2 — Scan the QR from inside sing-box
-
-In the desktop app, click **"On Android too? Get the config for your phone"**.
-A QR code appears.
-
-On the phone — same Wi-Fi as the PC — open **sing-box**, go to **New profile**
-and tap the **scan** icon, then point it at the QR. The profile fills itself
-in; save it.
-
-Scan it from inside sing-box, not with the system camera. The QR holds a
-`sing-box://` import link, and scanning is the one route that hands it over
-intact — released builds reject a plain URL in the scanner, and a browser tap
-on the same link is unreliable.
-
-While that window is open, the PC serves the profile on your local network and
-opens a firewall rule for it, both scoped to the local subnet and both closed
-again when you shut the window. Nothing is uploaded anywhere.
-
-**If neither the QR nor the address works**, click **"Neither works? Save the
-file to send yourself"** in that same window. That route uses no network at
-all: send `discord-tunneling-android.json` to your phone by cable, cloud or
-message, then in sing-box choose **New profile → Type: Local → Import from
-file**. It always works.
-
-### Step 3 — Turn it on
-
-In sing-box, go to **Dashboard**, select the profile, and tap the toggle.
-Android asks once to allow the VPN connection — accept it.
-
-That's it. Discord goes through the VPN; every other app on the phone keeps its
-normal connection.
-
-**Check it worked:** with Discord open, the sing-box Dashboard should show
-Outbound connections above zero. If it sits at 0, see the first note below —
-your Discord build's package name probably differs from the one in the profile.
-
-### If the phone can't reach the PC
-
-The app opens the firewall for its own port while the handoff window is up, but
-some networks isolate wireless clients from each other, and a phone on mobile
-data or a guest SSID isn't on your LAN at all. Use the file route in that case —
-the button in the same window — since it needs no network.
-
-### Notes
-
-- **If the Dashboard shows 0 connections while Discord is open**, the package
-  filter isn't matching. The profile targets `com.discord`, which is the Play
-  Store build — modified clients (Aliucord, Revenge, Bunny) and some clones use
-  a different package name entirely.
-
-  Fix it in **Settings → Per-app proxy → select Discord**. That screen lists
-  apps by their visible name, so it resolves the right package whichever build
-  you have, and it *overrides* `include_package`, so it wins. Leave it alone
-  only while the config's filter is actually working.
-- **The profile is imported as a Remote one**, so sing-box remembers the PC's
-  address. The configuration itself is already downloaded and keeps working
-  after the PC's handoff stops — but leave auto-update off, or the profile will
-  periodically try to reach a PC that isn't serving anything.
-- Only `com.discord` is routed. To add another build — a beta, a fork — add its
-  package name to `include_package` in the JSON and re-import.
-- No root needed. Android's `VpnService` does per-app routing natively, which
-  is why the phone side is far simpler than the Windows side.
-
-## What about iOS?
-
-Not possible in any honest form. Per-app VPN on iOS exists only for devices
-managed through an MDM; a consumer app can't route a single app's traffic. The
-closest approximation is routing by destination rather than by app — sending
-only Discord's IP ranges through the tunnel, which sing-box for iOS can
-express — but it's a rough match and breaks whenever Discord changes
-infrastructure.
 
 ## Author
 
