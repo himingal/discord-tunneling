@@ -429,7 +429,8 @@ function Build-ConfigFromConf($confPath) {
     $endpointPort = $endpointParts[1]
 
     # If the VPN server is a literal IP, exclude it from the TUN's captured
-    # routes too, as a second line of defense alongside bind_interface below.
+    # routes too, as a second line of defense alongside the interface
+    # detection below.
     $routeExcludeAddresses = @()
     if ($endpointHost -match '^\d{1,3}(\.\d{1,3}){3}$') {
         $routeExcludeAddresses += "$endpointHost/32"
@@ -440,28 +441,19 @@ function Build-ConfigFromConf($confPath) {
     # a plain SOCKS5 proxy only ever carries the TCP/HTTP(S) traffic.
     $discordProcesses = @("Discord.exe", "Update.exe")
 
-    # auto_route on the TUN makes it the OS's default route for everything,
-    # so the "direct" outbound (which carries all non-Discord traffic) must
-    # explicitly escape back out through the real physical adapter, or every
-    # non-Discord connection on the whole PC loops into the TUN with nowhere
-    # to go (this took down all networking, including DNS, during testing).
-    # route.auto_detect_interface/default_interface do this too, but combined
-    # with a WireGuard *endpoint* they hit a Windows-only sing-box bug (fails
-    # to bind a udp6 socket - "address family not supported" - on any machine
-    # where the active adapter has IPv6 disabled, which blocks the WireGuard
-    # handshake entirely: see SagerNet/sing-box#2900). Binding "direct"
-    # directly to the detected physical interface, and having the WireGuard
-    # endpoint detour through that already-bound "direct" outbound instead of
-    # binding itself, sidesteps the bug while still escaping the TUN.
-    $physicalInterface = $null
-    try {
-        $defaultRoute = Get-NetRoute -DestinationPrefix "0.0.0.0/0" -ErrorAction Stop | Sort-Object -Property RouteMetric | Select-Object -First 1
-        $physicalInterface = (Get-NetIPInterface -InterfaceIndex $defaultRoute.InterfaceIndex -AddressFamily IPv4 -ErrorAction Stop | Select-Object -First 1).InterfaceAlias
-    } catch {
-        $physicalInterface = $null
-    }
-
-    $directOutbound = [ordered]@{ type = "direct"; tag = "direct" }
+    # auto_route on the TUN makes it the OS's default route for everything, so
+    # the "direct" outbound (which carries all non-Discord traffic) must
+    # explicitly escape back out through the real adapter, or every non-Discord
+    # connection on the whole PC loops into the TUN with nowhere to go - that
+    # took down all networking, DNS included, during testing.
+    #
+    # auto_detect_interface rather than a fixed bind_interface: the adapter is
+    # followed as it changes, so moving between Ethernet and Wi-Fi needs no
+    # reconfiguring. domain_resolver is what makes this combination legal -
+    # sing-box refuses a detour into an outbound carrying no explicit dial
+    # fields ("detour to an empty direct outbound makes no sense"), and a
+    # route-level auto_detect_interface doesn't count as one.
+    $directOutbound = [ordered]@{ type = "direct"; tag = "direct"; domain_resolver = "dns-direct" }
     $wireguardEndpoint = [ordered]@{
         type = "wireguard"
         tag = "vpn"
@@ -469,6 +461,12 @@ function Build-ConfigFromConf($confPath) {
         address = $endpointAddresses
         private_key = $privateKey
         mtu = 1408
+        # Detours through "direct" instead of dialing for itself: a WireGuard
+        # endpoint bound to an interface fails on Windows whenever that adapter
+        # has IPv6 disabled, and the failed udp6 bind blocks the handshake
+        # outright (SagerNet/sing-box#2900). Going through "direct" keeps the
+        # endpoint away from that code path entirely.
+        detour = "direct"
         peers = @(
             [ordered]@{
                 address = $endpointHost
@@ -480,21 +478,12 @@ function Build-ConfigFromConf($confPath) {
         )
     }
     $routeBlock = [ordered]@{
+        auto_detect_interface = $true
         default_domain_resolver = "dns-direct"
         rules = @(
             [ordered]@{ process_name = $discordProcesses; action = "route"; outbound = "vpn" }
         )
         final = "direct"
-    }
-
-    if ($physicalInterface) {
-        $directOutbound["bind_interface"] = $physicalInterface
-        $wireguardEndpoint["detour"] = "direct"
-    } else {
-        # Couldn't detect the physical adapter - fall back to sing-box's own
-        # detection. Slightly more likely to hit the Windows bug above, but
-        # better than leaving "direct" with no way to escape the TUN at all.
-        $routeBlock["auto_detect_interface"] = $true
     }
 
     $configObj = [ordered]@{
@@ -604,8 +593,8 @@ function Set-Autostart($enable) {
         # shortcut (which Windows cannot silently elevate).
         $action = New-ScheduledTaskAction -Execute (Join-Path $base "sing-box.exe") -Argument "run -c config.json" -WorkingDirectory $base
 
-        # 20s delay: bind_interface names a real adapter, so starting before
-        # the NIC is up just fails.
+        # 20s delay: interface detection and the WireGuard handshake both need
+        # a network that's actually up, which it often isn't at logon.
         $trigger = New-ScheduledTaskTrigger -AtLogOn
         $trigger.Delay = "PT20S"
 
