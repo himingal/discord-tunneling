@@ -271,6 +271,65 @@ function Set-Progress($text, [System.Drawing.Color]$color = $LogGray) {
     [System.Windows.Forms.Application]::DoEvents()
 }
 
+function Show-PhoneHandoffDialog($url) {
+    # The QR carries the page address rather than the sing-box:// deep link, so
+    # any phone camera can open it - including before sing-box is installed,
+    # since the page itself links to the store.
+    $dlg = New-Object System.Windows.Forms.Form
+    $dlg.Text = "Send to your phone"
+    $dlg.ClientSize = New-Object System.Drawing.Size(360, 470)
+    $dlg.FormBorderStyle = "FixedDialog"
+    $dlg.MaximizeBox = $false
+    $dlg.MinimizeBox = $false
+    $dlg.StartPosition = "CenterParent"
+    $dlg.BackColor = [System.Drawing.Color]::White
+    if ($appIcon) { $dlg.Icon = $appIcon }
+
+    $title = New-Object System.Windows.Forms.Label
+    $title.Text = "Point your phone's camera here"
+    $title.Font = New-Object System.Drawing.Font("Segoe UI", 12, [System.Drawing.FontStyle]::Bold)
+    $title.ForeColor = $BrandPinkDk
+    $title.TextAlign = "MiddleCenter"
+    $title.Size = New-Object System.Drawing.Size(340, 26)
+    $title.Location = New-Object System.Drawing.Point(10, 16)
+    $dlg.Controls.Add($title)
+
+    $qr = New-QrBitmap $url 7 3
+    if ($qr) {
+        $pic = New-Object System.Windows.Forms.PictureBox
+        $pic.Image = $qr
+        $pic.SizeMode = "Zoom"
+        $pic.Size = New-Object System.Drawing.Size(280, 280)
+        $pic.Location = New-Object System.Drawing.Point(40, 50)
+        $dlg.Controls.Add($pic)
+    }
+
+    $urlBox = New-Object System.Windows.Forms.TextBox
+    $urlBox.Text = $url
+    $urlBox.ReadOnly = $true
+    $urlBox.TextAlign = "Center"
+    $urlBox.Font = New-Object System.Drawing.Font("Segoe UI", 10, [System.Drawing.FontStyle]::Bold)
+    $urlBox.BorderStyle = "FixedSingle"
+    $urlBox.Size = New-Object System.Drawing.Size(280, 26)
+    $urlBox.Location = New-Object System.Drawing.Point(40, 340)
+    $dlg.Controls.Add($urlBox)
+
+    $help = New-Object System.Windows.Forms.Label
+    $help.Text = "Or type that address in your phone's browser." + "`r`n`r`n" +
+                 "Tap Import into sing-box on the page that opens. Discord is already the only app routed through it - nothing to set up afterwards." + "`r`n`r`n" +
+                 "Both devices must be on the same Wi-Fi. Nothing leaves your network, and this stops working when you close this window."
+    $help.Font = New-Object System.Drawing.Font("Segoe UI", 8.5)
+    $help.ForeColor = [System.Drawing.Color]::FromArgb(95, 95, 105)
+    $help.TextAlign = "TopCenter"
+    $help.Size = New-Object System.Drawing.Size(320, 82)
+    $help.Location = New-Object System.Drawing.Point(20, 374)
+    $dlg.Controls.Add($help)
+
+    $dlg.ShowDialog() | Out-Null
+    if ($qr) { $qr.Dispose() }
+    $dlg.Dispose()
+}
+
 # ---------- Android config link ----------
 $androidLink = New-Object System.Windows.Forms.LinkLabel
 $androidLink.Text = "On Android too? Get the config for your phone"
@@ -296,14 +355,7 @@ $androidLink.Add_Click({
         return
     }
 
-    # Blocks until dismissed, and the handoff stops with it - the profile is
-    # only reachable while this box is on screen.
-    [System.Windows.Forms.MessageBox]::Show(
-        "On your phone, open this address in any browser:`n`n        $url`n`nThen tap Import into sing-box. That's it - Discord is already the only app routed through it.`n`nBoth devices need to be on the same Wi-Fi. Nothing leaves your network, and this address stops working as soon as you close this message.",
-        "Send to your phone",
-        "OK",
-        "Information"
-    ) | Out-Null
+    Show-PhoneHandoffDialog $url
     Stop-AndroidHandoff
 })
 
@@ -627,6 +679,392 @@ function Build-ConfigFromConf($confPath) {
 $androidConfigName = "discord-tunneling-android.json"
 $androidHandoffPort = 8899
 $script:androidHandoff = $null
+
+$script:qrTypeLoaded = $false
+
+function Initialize-QrEncoder {
+    # Compiled on first use rather than at startup - the app opens instantly
+    # for everyone who never touches the Android handoff.
+    if ($script:qrTypeLoaded) { return $true }
+    $qrSource = @'
+// Minimal QR encoder: byte mode, EC level L, versions 1-10.
+// Enough for a sing-box import deep link (~110 bytes) and nothing more.
+using System;
+using System.Collections.Generic;
+
+public static class QrLite
+{
+    // Data codewords per version at EC level L
+    static readonly int[] DataCw = { 0, 19, 34, 55, 80, 108, 136, 156, 194, 232, 274 };
+    // EC codewords per block, at EC level L
+    static readonly int[] EcPerBlock = { 0, 7, 10, 15, 20, 26, 18, 20, 24, 30, 18 };
+    // Blocks per version: {group1 count, group2 count}
+    static readonly int[][] Blocks = {
+        null,
+        new[]{1,0}, new[]{1,0}, new[]{1,0}, new[]{1,0}, new[]{1,0},
+        new[]{2,0}, new[]{2,0}, new[]{2,0}, new[]{2,0}, new[]{2,2}
+    };
+    static readonly int[][] AlignPos = {
+        null, new int[]{}, new[]{6,18}, new[]{6,22}, new[]{6,26}, new[]{6,30},
+        new[]{6,34}, new[]{6,22,38}, new[]{6,24,42}, new[]{6,26,46}, new[]{6,28,50}
+    };
+    static readonly int[] VersionInfo = { 0,0,0,0,0,0,0, 0x07C94, 0x085BC, 0x09A99, 0x0A4D3 };
+
+    static int[] expTable = new int[512];
+    static int[] logTable = new int[256];
+
+    static QrLite()
+    {
+        int x = 1;
+        for (int i = 0; i < 255; i++)
+        {
+            expTable[i] = x;
+            logTable[x] = i;
+            x <<= 1;
+            if ((x & 0x100) != 0) x ^= 0x11D;
+        }
+        for (int i = 255; i < 512; i++) expTable[i] = expTable[i - 255];
+    }
+
+    static int Mul(int a, int b)
+    {
+        if (a == 0 || b == 0) return 0;
+        return expTable[logTable[a] + logTable[b]];
+    }
+
+    static int[] GenPoly(int degree)
+    {
+        int[] poly = new int[] { 1 };
+        for (int i = 0; i < degree; i++)
+        {
+            int[] next = new int[poly.Length + 1];
+            for (int j = 0; j < poly.Length; j++)
+            {
+                next[j] ^= poly[j];
+                next[j + 1] ^= Mul(poly[j], expTable[i]);
+            }
+            poly = next;
+        }
+        return poly;
+    }
+
+    static int[] EcCodewords(int[] data, int ecLen)
+    {
+        int[] gen = GenPoly(ecLen);
+        int[] rem = new int[ecLen];
+        for (int i = 0; i < data.Length; i++)
+        {
+            int factor = data[i] ^ rem[0];
+            Array.Copy(rem, 1, rem, 0, ecLen - 1);
+            rem[ecLen - 1] = 0;
+            for (int j = 0; j < ecLen; j++)
+                rem[j] ^= Mul(gen[j + 1], factor);
+        }
+        return rem;
+    }
+
+    public static bool[,] Encode(string text)
+    {
+        byte[] payload = System.Text.Encoding.UTF8.GetBytes(text);
+
+        int version = 0;
+        for (int v = 1; v <= 10; v++)
+        {
+            int countBits = (v <= 9) ? 8 : 16;
+            int capacity = DataCw[v] - 1 - (countBits / 8);
+            if (payload.Length <= capacity) { version = v; break; }
+        }
+        if (version == 0) throw new Exception("payload too large for version 10");
+
+        int size = version * 4 + 17;
+        int charCountBits = (version <= 9) ? 8 : 16;
+
+        // --- bit stream: mode(0100) + count + data + terminator + pad ---
+        var bits = new List<bool>();
+        AddBits(bits, 4, 4);                      // byte mode
+        AddBits(bits, payload.Length, charCountBits);
+        foreach (byte b in payload) AddBits(bits, b, 8);
+
+        int totalDataBits = DataCw[version] * 8;
+        int term = Math.Min(4, totalDataBits - bits.Count);
+        AddBits(bits, 0, term);
+        while (bits.Count % 8 != 0) bits.Add(false);
+        int padByte = 0xEC;
+        while (bits.Count < totalDataBits)
+        {
+            AddBits(bits, padByte, 8);
+            padByte = (padByte == 0xEC) ? 0x11 : 0xEC;
+        }
+
+        int[] dataCw = new int[DataCw[version]];
+        for (int i = 0; i < dataCw.Length; i++)
+        {
+            int val = 0;
+            for (int j = 0; j < 8; j++) val = (val << 1) | (bits[i * 8 + j] ? 1 : 0);
+            dataCw[i] = val;
+        }
+
+        // --- split into blocks, compute EC, interleave ---
+        int g1 = Blocks[version][0], g2 = Blocks[version][1];
+        int totalBlocks = g1 + g2;
+        int ecLen = EcPerBlock[version];
+        int shortLen = DataCw[version] / totalBlocks;
+
+        var dataBlocks = new List<int[]>();
+        var ecBlocks = new List<int[]>();
+        int pos = 0;
+        for (int b = 0; b < totalBlocks; b++)
+        {
+            int len = shortLen + (b < g1 ? 0 : 1);
+            int[] blk = new int[len];
+            Array.Copy(dataCw, pos, blk, 0, len);
+            pos += len;
+            dataBlocks.Add(blk);
+            ecBlocks.Add(EcCodewords(blk, ecLen));
+        }
+
+        var final = new List<int>();
+        int maxLen = shortLen + (g2 > 0 ? 1 : 0);
+        for (int i = 0; i < maxLen; i++)
+            foreach (var blk in dataBlocks)
+                if (i < blk.Length) final.Add(blk[i]);
+        for (int i = 0; i < ecLen; i++)
+            foreach (var blk in ecBlocks)
+                final.Add(blk[i]);
+
+        // --- matrix ---
+        bool[,] mod = new bool[size, size];
+        bool[,] used = new bool[size, size];
+
+        PlaceFinder(mod, used, 0, 0, size);
+        PlaceFinder(mod, used, size - 7, 0, size);
+        PlaceFinder(mod, used, 0, size - 7, size);
+
+        for (int i = 8; i < size - 8; i++)
+        {
+            bool dark = (i % 2 == 0);
+            mod[i, 6] = dark; used[i, 6] = true;
+            mod[6, i] = dark; used[6, i] = true;
+        }
+
+        int[] aligns = AlignPos[version];
+        foreach (int ax in aligns)
+            foreach (int ay in aligns)
+            {
+                if ((ax <= 8 && ay <= 8) || (ax <= 8 && ay >= size - 9) || (ax >= size - 9 && ay <= 8)) continue;
+                for (int dx = -2; dx <= 2; dx++)
+                    for (int dy = -2; dy <= 2; dy++)
+                    {
+                        bool dark = Math.Max(Math.Abs(dx), Math.Abs(dy)) != 1;
+                        mod[ax + dx, ay + dy] = dark;
+                        used[ax + dx, ay + dy] = true;
+                    }
+            }
+
+        // dark module + reserve format areas
+        mod[8, size - 8] = true; used[8, size - 8] = true;
+        for (int i = 0; i < 9; i++)
+        {
+            if (!used[i, 8]) { used[i, 8] = true; }
+            if (!used[8, i]) { used[8, i] = true; }
+        }
+        for (int i = 0; i < 8; i++)
+        {
+            used[size - 1 - i, 8] = true;
+            used[8, size - 1 - i] = true;
+        }
+        if (version >= 7)
+            for (int i = 0; i < 6; i++)
+                for (int j = 0; j < 3; j++)
+                {
+                    used[i, size - 11 + j] = true;
+                    used[size - 11 + j, i] = true;
+                }
+
+        // --- data placement, zigzag from bottom-right ---
+        int bitIdx = 0;
+        int totalBits = final.Count * 8;
+        bool upward = true;
+        for (int col = size - 1; col >= 1; col -= 2)
+        {
+            if (col == 6) col = 5;
+            for (int r = 0; r < size; r++)
+            {
+                int row = upward ? size - 1 - r : r;
+                for (int c = 0; c < 2; c++)
+                {
+                    int cc = col - c;
+                    if (used[cc, row]) continue;
+                    bool bit = false;
+                    if (bitIdx < totalBits)
+                    {
+                        int by = final[bitIdx / 8];
+                        bit = ((by >> (7 - (bitIdx % 8))) & 1) == 1;
+                    }
+                    bitIdx++;
+                    mod[cc, row] = bit;
+                }
+            }
+            upward = !upward;
+        }
+
+        // --- pick mask by penalty ---
+        int bestMask = 0, bestScore = int.MaxValue;
+        bool[,] bestGrid = null;
+        for (int m = 0; m < 8; m++)
+        {
+            bool[,] test = (bool[,])mod.Clone();
+            ApplyMask(test, used, size, m);
+            PlaceFormat(test, size, m);
+            if (version >= 7) PlaceVersion(test, size, version);
+            int score = Penalty(test, size);
+            if (score < bestScore) { bestScore = score; bestMask = m; bestGrid = test; }
+        }
+        return bestGrid;
+    }
+
+    static void AddBits(List<bool> bits, int value, int count)
+    {
+        for (int i = count - 1; i >= 0; i--) bits.Add(((value >> i) & 1) == 1);
+    }
+
+    static void PlaceFinder(bool[,] mod, bool[,] used, int x, int y, int size)
+    {
+        for (int dx = -1; dx <= 7; dx++)
+            for (int dy = -1; dy <= 7; dy++)
+            {
+                int px = x + dx, py = y + dy;
+                if (px < 0 || py < 0 || px >= size || py >= size) continue;
+                bool dark = (dx >= 0 && dx <= 6 && dy >= 0 && dy <= 6) &&
+                            (dx == 0 || dx == 6 || dy == 0 || dy == 6 ||
+                             (dx >= 2 && dx <= 4 && dy >= 2 && dy <= 4));
+                mod[px, py] = dark;
+                used[px, py] = true;
+            }
+    }
+
+    static bool MaskAt(int m, int x, int y)
+    {
+        switch (m)
+        {
+            case 0: return (x + y) % 2 == 0;
+            case 1: return y % 2 == 0;
+            case 2: return x % 3 == 0;
+            case 3: return (x + y) % 3 == 0;
+            case 4: return (y / 2 + x / 3) % 2 == 0;
+            case 5: return (x * y) % 2 + (x * y) % 3 == 0;
+            case 6: return ((x * y) % 2 + (x * y) % 3) % 2 == 0;
+            default: return ((x + y) % 2 + (x * y) % 3) % 2 == 0;
+        }
+    }
+
+    static void ApplyMask(bool[,] mod, bool[,] used, int size, int m)
+    {
+        for (int x = 0; x < size; x++)
+            for (int y = 0; y < size; y++)
+                if (!used[x, y] && MaskAt(m, x, y))
+                    mod[x, y] = !mod[x, y];
+    }
+
+    static void PlaceFormat(bool[,] mod, int size, int mask)
+    {
+        int data = (1 << 3) | mask;            // EC level L == 01, shifted
+        data = (0x01 << 3) | mask;
+        int rem = data;
+        for (int i = 0; i < 10; i++) rem = (rem << 1) ^ (((rem >> 9) != 0) ? 0x537 : 0);
+        int fmt = ((data << 10) | rem) ^ 0x5412;
+
+        for (int i = 0; i <= 5; i++) mod[8, i] = ((fmt >> i) & 1) == 1;
+        mod[8, 7] = ((fmt >> 6) & 1) == 1;
+        mod[8, 8] = ((fmt >> 7) & 1) == 1;
+        mod[7, 8] = ((fmt >> 8) & 1) == 1;
+        for (int i = 9; i < 15; i++) mod[14 - i, 8] = ((fmt >> i) & 1) == 1;
+
+        for (int i = 0; i < 8; i++) mod[size - 1 - i, 8] = ((fmt >> i) & 1) == 1;
+        for (int i = 8; i < 15; i++) mod[8, size - 15 + i] = ((fmt >> i) & 1) == 1;
+    }
+
+    static void PlaceVersion(bool[,] mod, int size, int version)
+    {
+        int info = VersionInfo[version];
+        for (int i = 0; i < 18; i++)
+        {
+            bool bit = ((info >> i) & 1) == 1;
+            int a = i / 3, b = i % 3;
+            mod[a, size - 11 + b] = bit;
+            mod[size - 11 + b, a] = bit;
+        }
+    }
+
+    static int Penalty(bool[,] m, int size)
+    {
+        int score = 0;
+        // rule 1: runs of 5+
+        for (int dir = 0; dir < 2; dir++)
+            for (int a = 0; a < size; a++)
+            {
+                int run = 1;
+                bool prev = dir == 0 ? m[0, a] : m[a, 0];
+                for (int b = 1; b < size; b++)
+                {
+                    bool cur = dir == 0 ? m[b, a] : m[a, b];
+                    if (cur == prev) run++;
+                    else { if (run >= 5) score += 3 + (run - 5); run = 1; prev = cur; }
+                }
+                if (run >= 5) score += 3 + (run - 5);
+            }
+        // rule 2: 2x2 blocks
+        for (int x = 0; x < size - 1; x++)
+            for (int y = 0; y < size - 1; y++)
+                if (m[x, y] == m[x + 1, y] && m[x, y] == m[x, y + 1] && m[x, y] == m[x + 1, y + 1])
+                    score += 3;
+        // rule 3: finder-like patterns
+        for (int dir = 0; dir < 2; dir++)
+            for (int a = 0; a < size; a++)
+                for (int b = 0; b < size - 6; b++)
+                {
+                    bool[] p = new bool[7];
+                    for (int k = 0; k < 7; k++) p[k] = dir == 0 ? m[b + k, a] : m[a, b + k];
+                    if (p[0] && !p[1] && p[2] && p[3] && p[4] && !p[5] && p[6]) score += 40;
+                }
+        // rule 4: dark ratio
+        int dark = 0;
+        foreach (bool v in m) if (v) dark++;
+        int pct = dark * 100 / (size * size);
+        score += Math.Abs(pct - 50) / 5 * 10;
+        return score;
+    }
+}
+'@
+    try {
+        Add-Type -TypeDefinition $qrSource -ErrorAction Stop
+        $script:qrTypeLoaded = $true
+        return $true
+    } catch {
+        return $false
+    }
+}
+
+function New-QrBitmap($text, $scale = 7, $quiet = 3) {
+    if (-not (Initialize-QrEncoder)) { return $null }
+    try { $matrix = [QrLite]::Encode($text) } catch { return $null }
+    $size = [int][Math]::Sqrt($matrix.Length)
+    $dim = ($size + $quiet * 2) * $scale
+    $bmp = New-Object System.Drawing.Bitmap($dim, $dim)
+    $g = [System.Drawing.Graphics]::FromImage($bmp)
+    $g.Clear([System.Drawing.Color]::White)
+    $brush = New-Object System.Drawing.SolidBrush([System.Drawing.Color]::Black)
+    for ($x = 0; $x -lt $size; $x++) {
+        for ($y = 0; $y -lt $size; $y++) {
+            if ($matrix[$x, $y]) {
+                $g.FillRectangle($brush, ($x + $quiet) * $scale, ($y + $quiet) * $scale, $scale, $scale)
+            }
+        }
+    }
+    $brush.Dispose()
+    $g.Dispose()
+    return $bmp
+}
 
 function Get-LanIPAddress {
     $iface = Get-PhysicalInterfaceAlias
