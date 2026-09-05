@@ -190,39 +190,57 @@ Your phone gets the same split tunnel, from the same `.conf` — and there's
 nothing to configure once it's imported.
 
 When you import your VPN config on the PC, the app also writes
-**`discord-tunneling-android.json`** next to it. That file is a complete
-sing-box profile with Discord already set as the only app routed through the
-tunnel, so on the phone you just import and switch it on.
+**`discord-tunneling-android.json`** next to it: a complete sing-box profile
+with Discord already set as the only app routed through the tunnel. The app can
+hand it straight to your phone over your own Wi-Fi, so there's no file to copy
+and nothing to configure after importing.
 
-> This file contains your VPN private key, same as the desktop config. Send it
-> to yourself privately — don't post it anywhere.
+> The profile contains your VPN private key, same as the desktop config. The
+> handoff below keeps it on your local network; if you move the file around by
+> hand instead, treat it like a password.
 
-### Step 1 — Get the file
+### Why there's no APK
 
-In the app, click **"On Android too? Get the config for your phone"**. Explorer
-opens with `discord-tunneling-android.json` selected.
+There isn't one, and adding one wouldn't help. Android sandboxing stops any app
+from writing into sing-box's private storage, so an "installer app" would have
+to *be* a VPN client — a fork of sing-box carrying your keys, unsigned and
+outside Play Store review. sing-box already registers a
+`sing-box://import-remote-profile` URL scheme, which is why a tap on a local
+web page does the same job with software you can verify.
 
-Copy it to your phone however you like — USB cable, Google Drive, sending it to
-yourself on any messenger.
-
-### Step 2 — Install sing-box on the phone
+### Step 1 — Install sing-box on the phone
 
 Get **sing-box** from
 [Google Play](https://play.google.com/store/apps/details?id=io.nekohasekai.sfa)
 or [F-Droid](https://f-droid.org/en/packages/io.nekohasekai.sfa/).
 
-### Step 3 — Import the profile
+### Step 2 — Send the profile over from the PC
 
-In sing-box: **Profiles → + (new) → Type: Local → Import from file**, pick the
-`discord-tunneling-android.json` you copied over, and save it.
+In the desktop app, click **"On Android too? Get the config for your phone"**.
+It shows a short address like `http://192.168.3.122:8899`.
 
-### Step 4 — Turn it on
+On your phone — connected to the same Wi-Fi — open that address in any browser
+and tap **Import into sing-box**. sing-box opens with the profile already
+filled in; save it.
 
-Go back to **Dashboard**, select the profile, and tap the toggle. Android asks
-once to allow the VPN connection — accept it.
+The PC serves the profile only while that message is on screen, and only on
+your local network. Nothing is uploaded anywhere.
+
+### Step 3 — Turn it on
+
+In sing-box, go to **Dashboard**, select the profile, and tap the toggle.
+Android asks once to allow the VPN connection — accept it.
 
 That's it. Discord goes through the VPN; every other app on the phone keeps its
 normal connection.
+
+### If the phone can't reach the PC
+
+Some networks isolate wireless clients from each other, and the PC's firewall
+may block the port. In that case use the file directly: it's
+`discord-tunneling-android.json`, next to the desktop config in the install
+folder. Copy it to the phone by cable or cloud, then in sing-box choose
+**Profiles → + → Type: Local → Import from file**.
 
 ### Notes
 

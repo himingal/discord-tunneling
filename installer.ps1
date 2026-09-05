@@ -283,19 +283,31 @@ $androidLink.Location = New-Object System.Drawing.Point(20, 398)
 $form.Controls.Add($androidLink)
 $androidLink.Add_Click({
     $androidPath = Join-Path $base $androidConfigName
-    if (Test-Path $androidPath) {
-        # Select it in Explorer so it can be dragged straight onto a phone
-        Start-Process "explorer.exe" -ArgumentList "/select,`"$androidPath`""
-        [System.Windows.Forms.MessageBox]::Show(
-            "Your phone's config is the file now selected in Explorer:`n`n$androidConfigName`n`nCopy it to your Android device, install sing-box from Google Play or F-Droid, then use Import from file in the app.`n`nDiscord is already the only app routed through it - there's nothing to set up in sing-box's settings.",
-            "Android config",
-            "OK",
-            "Information"
-        ) | Out-Null
-    } else {
-        [System.Windows.Forms.MessageBox]::Show("Import a VPN .conf file first - the Android config is generated from it.", "Nothing to export yet", "OK", "Information") | Out-Null
+    if (-not (Test-Path $androidPath)) {
+        [System.Windows.Forms.MessageBox]::Show("Import a VPN .conf file first - the Android config is generated from it.", "Nothing to send yet", "OK", "Information") | Out-Null
+        return
     }
+
+    $url = Start-AndroidHandoff
+    if (-not $url) {
+        # No LAN address to serve on - fall back to handing over the file
+        Start-Process "explorer.exe" -ArgumentList "/select,`"$androidPath`""
+        [System.Windows.Forms.MessageBox]::Show("Couldn't start the local handoff, so here's the file instead:`n`n$androidConfigName`n`nCopy it to your phone and use Import from file in sing-box.", "Android config", "OK", "Information") | Out-Null
+        return
+    }
+
+    # Blocks until dismissed, and the handoff stops with it - the profile is
+    # only reachable while this box is on screen.
+    [System.Windows.Forms.MessageBox]::Show(
+        "On your phone, open this address in any browser:`n`n        $url`n`nThen tap Import into sing-box. That's it - Discord is already the only app routed through it.`n`nBoth devices need to be on the same Wi-Fi. Nothing leaves your network, and this address stops working as soon as you close this message.",
+        "Send to your phone",
+        "OK",
+        "Information"
+    ) | Out-Null
+    Stop-AndroidHandoff
 })
+
+$form.Add_FormClosing({ Stop-AndroidHandoff })
 
 # ---------- Divider + credit row (avatar + made by mingal, bottom) ----------
 $divider = New-Object System.Windows.Forms.Panel
@@ -613,6 +625,128 @@ function Build-ConfigFromConf($confPath) {
 }
 
 $androidConfigName = "discord-tunneling-android.json"
+$androidHandoffPort = 8899
+$script:androidHandoff = $null
+
+function Get-LanIPAddress {
+    $iface = Get-PhysicalInterfaceAlias
+    if (-not $iface) { return $null }
+    $ip = Get-NetIPAddress -InterfaceAlias $iface -AddressFamily IPv4 -ErrorAction SilentlyContinue |
+        Where-Object { $_.IPAddress -notlike "169.254.*" } | Select-Object -First 1
+    if ($ip) { return $ip.IPAddress }
+    return $null
+}
+
+function Stop-AndroidHandoff {
+    if (-not $script:androidHandoff) { return }
+    try { $script:androidHandoff.State.Stop = $true } catch { }
+    try { $script:androidHandoff.PowerShell.Stop() } catch { }
+    try { $script:androidHandoff.PowerShell.Dispose() } catch { }
+    try { $script:androidHandoff.Runspace.Close() } catch { }
+    $script:androidHandoff = $null
+}
+
+function Start-AndroidHandoff {
+    # Hands the phone its profile over the local network instead of asking
+    # anyone to copy a file around. sing-box for Android registers a
+    # sing-box://import-remote-profile URL scheme, so a page served here can
+    # import the profile in one tap - and the key never leaves the LAN.
+    Stop-AndroidHandoff
+
+    $ip = Get-LanIPAddress
+    if (-not $ip) { return $null }
+    $configPath = Join-Path $base $androidConfigName
+    if (-not (Test-Path $configPath)) { return $null }
+
+    $state = [hashtable]::Synchronized(@{ Stop = $false; Served = 0 })
+    $runspace = [runspacefactory]::CreateRunspace()
+    $runspace.ApartmentState = "STA"
+    $runspace.ThreadOptions = "ReuseThread"
+    $runspace.Open()
+    $runspace.SessionStateProxy.SetVariable("srvState", $state)
+    $runspace.SessionStateProxy.SetVariable("srvPort", $androidHandoffPort)
+    $runspace.SessionStateProxy.SetVariable("srvIp", $ip)
+    $runspace.SessionStateProxy.SetVariable("srvConfigPath", $configPath)
+
+    $ps = [powershell]::Create()
+    $ps.Runspace = $runspace
+    [void]$ps.AddScript({
+        $listener = New-Object System.Net.HttpListener
+        # The app runs elevated, so binding a wildcard prefix needs no separate
+        # URL ACL registration.
+        $listener.Prefixes.Add("http://+:$srvPort/")
+        try { $listener.Start() } catch { return }
+
+        $profileUrl = "http://$srvIp`:$srvPort/profile.json"
+        $deepLink = "sing-box://import-remote-profile?url=" +
+            [uri]::EscapeDataString($profileUrl) + "#" +
+            [uri]::EscapeDataString("Discord Tunneling")
+
+        $page = @"
+<!doctype html><html><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Discord Tunneling</title><style>
+body{margin:0;font-family:-apple-system,Segoe UI,Roboto,sans-serif;background:#faf7f9;color:#2b2b33;
+display:flex;min-height:100vh;align-items:center;justify-content:center;padding:24px}
+.card{background:#fff;border-radius:18px;padding:28px 24px;max-width:420px;width:100%;
+box-shadow:0 8px 30px rgba(0,0,0,.08);text-align:center}
+h1{font-size:20px;margin:0 0 6px;color:#c6307e}
+p{font-size:14px;line-height:1.5;color:#5a5a66;margin:0 0 20px}
+a.btn{display:block;background:#f657a9;color:#fff;text-decoration:none;font-weight:600;
+font-size:16px;padding:15px;border-radius:12px;margin-bottom:14px}
+ol{text-align:left;font-size:13px;color:#5a5a66;line-height:1.7;padding-left:20px;margin:0}
+.small{font-size:12px;color:#8a8a96;margin-top:18px}
+</style></head><body><div class="card">
+<h1>Discord Tunneling</h1>
+<p>Only Discord goes through your VPN. Everything else on this phone keeps its normal connection.</p>
+<a class="btn" href="$deepLink">Import into sing-box</a>
+<ol>
+<li>Install <b>sing-box</b> from Google Play or F-Droid, if you haven't.</li>
+<li>Tap the button above &mdash; sing-box opens with the profile ready.</li>
+<li>Save it, then switch it on from the Dashboard.</li>
+</ol>
+<p class="small">Nothing to configure afterwards: Discord is already the only app routed through it. Don't open sing-box's per-app proxy screen &mdash; it overrides this.</p>
+</div></body></html>
+"@
+
+        while (-not $srvState.Stop) {
+            $ctx = $null
+            try {
+                $task = $listener.GetContextAsync()
+                while (-not $task.AsyncWaitHandle.WaitOne(400)) {
+                    if ($srvState.Stop) { break }
+                }
+                if ($srvState.Stop) { break }
+                $ctx = $task.GetAwaiter().GetResult()
+            } catch { break }
+            if (-not $ctx) { continue }
+
+            try {
+                $path = $ctx.Request.Url.AbsolutePath
+                if ($path -eq "/profile.json") {
+                    $bytes = [System.IO.File]::ReadAllBytes($srvConfigPath)
+                    $ctx.Response.ContentType = "application/json"
+                    $srvState.Served = $srvState.Served + 1
+                } else {
+                    $bytes = [System.Text.Encoding]::UTF8.GetBytes($page)
+                    $ctx.Response.ContentType = "text/html; charset=utf-8"
+                }
+                $ctx.Response.ContentLength64 = $bytes.Length
+                $ctx.Response.OutputStream.Write($bytes, 0, $bytes.Length)
+                $ctx.Response.OutputStream.Close()
+            } catch { }
+        }
+        try { $listener.Stop() } catch { }
+        try { $listener.Close() } catch { }
+    })
+    [void]$ps.BeginInvoke()
+
+    $script:androidHandoff = @{
+        Runspace = $runspace; PowerShell = $ps; State = $state
+        Url = "http://$ip`:$androidHandoffPort"
+    }
+    return $script:androidHandoff.Url
+}
 # Discord's Play Store package. Anything else (a beta build, a fork) can be
 # added to this list and the file regenerated.
 $androidPackages = @("com.discord")
