@@ -9,15 +9,12 @@ Discord's Go Live / camera restriction in regions where it's currently
 disabled, without paying for a VPN provider's per-app split tunneling feature
 and without slowing down the rest of your PC.
 
-Voice, video and screen share included — not just chat.
-
-**Windows desktop only.**
+**Windows desktop only.** No admin rights, no virtual network adapter —
+just a local proxy Discord's launch flag points at.
 
 ## What you need
 
 - **Windows 10 or 11**
-- **Administrator rights.** The tunnel creates a virtual network adapter, which
-  Windows only allows with elevation. You'll get one UAC prompt.
 - **A WireGuard `.conf` file** from any VPN provider — Proton VPN, Mullvad,
   Windscribe and others all export these, and free tiers usually include it.
 - **Discord desktop app** installed.
@@ -57,108 +54,81 @@ Nothing is tunneled yet — the installer only puts the app in place.
 
 Open **Discord Single-Tunneling** (the gear icon).
 
-1. **Accept the UAC prompt.** The app needs Administrator rights to create the
-   tunnel adapter, so it asks once every time it starts.
-2. Leave **"Start automatically when Windows starts"** checked, unless you'd
+1. Leave **"Start automatically when Windows starts"** checked, unless you'd
    rather start the tunnel by hand.
-3. Click **Select VPN config file & Install** and pick the `.conf` file from
+2. Click **Select VPN config file & Install** and pick the `.conf` file from
    Step 1.
 
-The app then downloads sing-box and the wintun driver, builds the
-configuration, starts the tunnel, and **checks that your PC is still online**.
-If anything went wrong it shuts the tunnel back down by itself and tells you —
-your connection is never left broken.
-
-When the status dot turns **green — "Tunnel running"**, you're done.
+The app downloads sing-box if it isn't already present, builds the
+configuration, and starts the tunnel. When the status dot turns
+**green — "Tunnel running"**, you're done.
 
 ## Step 5 — Use it
 
-Just open Discord. Any Discord window is routed through the VPN while the
-tunnel is running — the desktop shortcut, the Start Menu, the tray icon, all
-the same.
+Click **Open Discord (Tunneling)**, or use the **"Discord (Tunneling)"**
+shortcut it created on your Desktop. This launches a separate, tunneled
+Discord instance — your regular Discord shortcut is untouched and still
+uses your normal connection.
 
 - You can **close the app window**; the tunnel keeps running in the background.
-- With autostart enabled, the tunnel comes up on its own at every boot, and
-  Discord waits for it before opening.
-- Reopening the app when the tunnel is stopped **starts it again
-  automatically** — you don't need to re-import your `.conf`.
+- With autostart enabled, the tunnel comes up on its own at every boot.
+- Reopening the app when the tunnel is stopped shows a **Reconfigure**
+  button — click it to start the tunnel again without re-importing your
+  `.conf`.
 
-To confirm it's working, open Discord and try joining someone's screen share,
-or check that your Go Live / camera options are available.
+To confirm it's working, check that your Go Live / camera options are
+available in the tunneled Discord.
 
 ## How it works
 
-[sing-box](https://github.com/SagerNet/sing-box) creates a virtual network
-adapter (TUN) backed by your WireGuard tunnel, and a routing rule matches
-traffic **by process name** (`Discord.exe` / `Update.exe`). Everything
-Discord's process sends — chat, login, and voice/video/screen share
-(WebRTC/UDP) — goes through the VPN; every other process keeps its normal
-route.
+[sing-box](https://github.com/SagerNet/sing-box) runs your WireGuard config
+as a local **SOCKS5 proxy** on `127.0.0.1:1080`. The "Discord (Tunneling)"
+shortcut launches Discord with `--proxy-server=socks5://127.0.0.1:1080`, so
+only that Discord instance's traffic goes through the proxy — your normal
+Discord shortcut, and everything else on the PC, keeps its regular route.
 
 ```
-        All system traffic (every process)
-                    |
-                    v
-     sing-box TUN adapter (route by process name)
-           |                          |
-   Discord.exe / Update.exe   everything else
-           |                          |
-           v                          v
-   WireGuard -> your VPN        direct (your normal
-       provider                    connection)
+  Discord (Tunneling) shortcut          Everything else
+  (--proxy-server flag)                 (normal Discord, browser, games...)
+            |                                     |
+            v                                     |
+   sing-box SOCKS5 (127.0.0.1:1080)                |
+            |                                     |
+            v                                     v
+     WireGuard -> your VPN provider        your normal connection
 ```
-
-Earlier versions used Discord's `--proxy-server` launch flag pointed at a local
-SOCKS5 proxy. That flag only ever carries TCP/HTTP(S) traffic — Chromium never
-routes WebRTC's UDP sockets through it — so voice, video and screen share
-silently fell back to the normal connection. Starting your own stream usually
-worked; joining someone else's didn't. Matching by process name at the network
-layer catches that traffic too.
 
 ## What the installer does
 
-- Relaunches itself elevated (one UAC prompt), required for the TUN adapter.
-- Downloads [sing-box](https://github.com/SagerNet/sing-box) and the
-  [wintun](https://www.wintun.net/) driver if they aren't already present, and
-  replaces a sing-box binary that's too old for the config it generates.
+- Downloads [sing-box](https://github.com/SagerNet/sing-box) if it isn't
+  already present.
 - Reads `PrivateKey`, `Address`, `PublicKey` and `Endpoint` from your `.conf` —
   no manual editing.
-- Generates `config.json`: a TUN inbound, the WireGuard endpoint, and
-  route/DNS rules matching Discord by process name. IPv6 is only enabled when
-  your provider actually gave you an IPv6 address.
-- Creates the **Discord (Tunneling)** desktop shortcut.
-- Verifies the PC is still online afterwards and **rolls the tunnel back
-  automatically** if it isn't — the TUN takes over the default route, so a bad
-  config could otherwise take the whole machine offline.
-- Registers autostart as a Scheduled Task that runs elevated and windowless at
-  logon, plus a small waiter that holds Discord until the tunnel is up. This is
-  only registered once the connectivity check passes, so a broken config can't
-  come back at every boot.
+- Generates `config.json`: a WireGuard endpoint feeding a local SOCKS5
+  listener.
+- Creates the **Discord (Tunneling)** desktop shortcut with the proxy flag
+  baked in.
+- Optionally registers autostart via a Startup-folder shortcut, so the
+  tunnel is already running by the time you log in.
 
 ## Troubleshooting
 
-**Discord hangs on "Starting…"**
-Almost always a leftover shortcut from v1.x still passing
-`--proxy-server=socks5://127.0.0.1:1080`, a proxy that no longer exists.
-Open the app and click **Reconfigure** once; it rewrites the desktop and
-Startup shortcuts.
+**The tunnel won't start**
+Look at `sing-box.log` in the install folder. A common cause is the same
+WireGuard `.conf` already being used somewhere else — a provider's WireGuard
+session is single-use, so a phone or another PC signed in with the same
+`.conf` will keep bouncing this one offline. Generate a fresh `.conf` if so.
 
-**The tunnel won't stay up**
-Look at `sing-box.log` in the install folder — that's the first place to check
-when the tunnel starts but traffic doesn't flow. Errors are logged at `warn`
-level, so a healthy tunnel leaves it nearly empty.
-
-**My whole PC lost internet**
-It shouldn't — the app checks and rolls back on its own. If a tunnel is somehow
-left running, end `sing-box.exe` in Task Manager and your connection returns
-immediately.
-
-**I switched from Ethernet to Wi-Fi**
-Nothing to do. The adapter is re-detected every time the tunnel starts.
+**Voice, video or screen share isn't tunneled**
+This version routes Discord through a SOCKS5 proxy, which only carries
+TCP/HTTP(S) traffic. Chromium never sends WebRTC's UDP sockets through a
+SOCKS5 proxy, so calls, video and screen share fall back to your normal
+connection — only chat, login and API traffic are actually tunneled. This is
+a limitation of the proxy approach itself, not a bug to report.
 
 **Antivirus blocked something**
-New TUN adapters and auto-downloaded executables sometimes get flagged. If
-sing-box won't start, check your AV logs first.
+Auto-downloaded executables sometimes get flagged. If sing-box won't start,
+check your AV logs first.
 
 ## Building from source
 
@@ -172,19 +142,16 @@ you'd rather build the installer yourself:
 
 You can also skip the installer entirely and run `installer.ps1` directly
 (right-click → Run with PowerShell). If you do, keep it in a folder you won't
-move — the tunnel's config and autostart task point at wherever you ran it
-from, and having a second copy elsewhere leads to two installs fighting over
-the same tunnel.
+move — the tunnel's config and autostart shortcut point at wherever you ran it
+from.
 
 ## Known limitations
 
-- **Any Discord window is tunneled while the tunnel runs.** Matching is by
-  process name, not by a launch flag, so there's no separate "untunneled"
-  Discord on the same PC.
+- **Voice, video and screen share are not tunneled** — see Troubleshooting
+  above. Only chat, login and API traffic go through the VPN.
 - **Windows only.** This is a desktop tool and doesn't cover phones.
-- If you need guaranteed 100% tunneling for non-Discord traffic too, or would
-  rather not grant admin rights, run Discord in a lightweight VM with the VPN
-  applied to its whole network instead.
+- If you need every kind of Discord traffic tunneled, run Discord in a
+  lightweight VM with the VPN applied to its whole network instead.
 
 ## Author
 
