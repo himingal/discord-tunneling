@@ -5,6 +5,9 @@ iniciar.vbs
 sing-box.exe
 singbox_temp*/
 singbox_temp.zip
+wintun.dll
+wintun_temp*/
+wintun_temp.zip
 
 # Inno Setup build output
 output/

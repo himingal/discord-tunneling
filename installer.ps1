@@ -377,6 +377,19 @@ function Build-ConfigFromConf($confPath) {
     $endpointHost = $endpointParts[0]
     $endpointPort = $endpointParts[1]
 
+    # If the VPN server is a literal IP, exclude it from the TUN's captured
+    # routes so sing-box's own WireGuard handshake/keepalive packets keep
+    # using the normal physical route instead of looping back into the TUN.
+    # (Binding that dial to a specific interface via auto_detect_interface/
+    # default_interface instead is a known sing-box/Windows incompatibility -
+    # it errors with "listen udp6 ... address family not supported" whenever
+    # the active adapter has IPv6 disabled, which blocks the handshake
+    # entirely. See SagerNet/sing-box#2900.)
+    $routeExcludeAddresses = @()
+    if ($endpointHost -match '^\d{1,3}(\.\d{1,3}){3}$') {
+        $routeExcludeAddresses += "$endpointHost/32"
+    }
+
     # Discord's own process names, matched at the network layer so voice,
     # video and screen share (which are all UDP/WebRTC) get tunneled too -
     # a plain SOCKS5 proxy only ever carries the TCP/HTTP(S) traffic.
@@ -421,13 +434,14 @@ function Build-ConfigFromConf($confPath) {
                 auto_route = $true
                 strict_route = $true
                 stack = "system"
+                route_exclude_address = $routeExcludeAddresses
             }
         )
         outbounds = @(
             [ordered]@{ type = "direct"; tag = "direct" }
         )
         route = [ordered]@{
-            auto_detect_interface = $true
+            default_domain_resolver = "dns-direct"
             rules = @(
                 [ordered]@{ process_name = $discordProcesses; action = "route"; outbound = "vpn" }
             )
