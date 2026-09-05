@@ -189,10 +189,11 @@ the same tunnel.
 Your phone gets the same split tunnel, from the same `.conf` — and there's
 nothing to configure once it's imported.
 
-When you import your VPN config on the PC, the app also writes
-**`discord-tunneling-android.json`** next to it: a complete sing-box profile
-with Discord already set as the only app routed through the tunnel. Scan a QR on the PC
-and the phone gets it over your own Wi-Fi — no file to copy, and nothing to
+Click **"On Android too? Get the config for your phone"** in the desktop app and
+pick the phone's own `.conf`. It writes
+**`discord-tunneling-android.json`**: a complete sing-box profile with Discord
+already set as the only app routed through the tunnel. Scan a QR on the PC and
+the phone gets it over your own Wi-Fi — no file to copy, and nothing to
 configure after importing.
 
 > The profile contains your VPN private key, same as the desktop config. The
@@ -207,6 +208,14 @@ to *be* a VPN client — a fork of sing-box carrying your keys, unsigned and
 outside Play Store review. sing-box already registers a
 `sing-box://import-remote-profile` URL scheme, which is why a tap on a local
 web page does the same job with software you can verify.
+
+> **Your phone needs a second `.conf`, not the PC's.** WireGuard identifies a
+> peer by its key and the VPN server keeps one session per key, so two devices
+> sharing a config make the server hand the session back and forth between
+> them — Discord looks connected but calls won't go through. Proton VPN lets
+> you create several configs from the same free account; download another one
+> for the phone. The app checks and refuses the PC's config if you pick it by
+> mistake.
 
 ### Step 1 — Install sing-box on the phone
 

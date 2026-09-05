@@ -376,9 +376,19 @@ $androidLink.Location = New-Object System.Drawing.Point(20, 398)
 $form.Controls.Add($androidLink)
 $androidLink.Add_Click({
     $androidPath = Join-Path $base $androidConfigName
+
     if (-not (Test-Path $androidPath)) {
-        [System.Windows.Forms.MessageBox]::Show("Import a VPN .conf file first - the Android config is generated from it.", "Nothing to send yet", "OK", "Information") | Out-Null
-        return
+        $answer = [System.Windows.Forms.MessageBox]::Show(
+            "Your phone needs a VPN config of its own - a second .conf file, not the one this PC uses.`n`nVPN providers allow one connection per config. Point two devices at the same one and the server keeps handing the session back and forth: Discord looks connected, but calls won't go through.`n`nProton VPN lets you create several configs from the same free account - download another one, then pick it here.`n`nOpen the file picker now?",
+            "Your phone needs its own config", "OKCancel", "Information")
+        if ($answer -ne "OK") { return }
+
+        $dialog = New-Object System.Windows.Forms.OpenFileDialog
+        $dialog.Title = "Select the .conf for your PHONE (not the PC's)"
+        $dialog.Filter = "WireGuard config (*.conf)|*.conf|All files (*.*)|*.*"
+        $dialog.InitialDirectory = Get-DownloadsFolder
+        if ($dialog.ShowDialog() -ne "OK") { return }
+        if (-not (New-AndroidConfigFromConf $dialog.FileName)) { return }
     }
 
     $url = Start-AndroidHandoff
@@ -703,8 +713,6 @@ function Build-ConfigFromConf($confPath) {
     $configPath = Join-Path $base "config.json"
     $jsonText = $configObj | ConvertTo-Json -Depth 10
     [System.IO.File]::WriteAllText($configPath, $jsonText, (New-Object System.Text.UTF8Encoding($false)))
-
-    Write-AndroidConfig $endpointAddresses $allowedIps $privateKey $endpointHost $endpointPort $publicKey $dnsStrategy
 
     Set-Progress "Config file created." $LogGreen
     return $true
@@ -1248,6 +1256,47 @@ font-weight:600;font-size:14px;padding:10px 18px;border-radius:10px}
 # Discord's Play Store package. Anything else (a beta build, a fork) can be
 # added to this list and the file regenerated.
 $androidPackages = @("com.discord")
+
+function New-AndroidConfigFromConf($confPath) {
+    # The phone needs a VPN config of its own. WireGuard identifies a peer by
+    # its key, and the VPN server keeps a single session per key - point two
+    # devices at the same one and the server hands the session back and forth
+    # between them, so neither carries traffic reliably. Handing the desktop's
+    # config to the phone looked like it worked right up until a call failed.
+    $confContent = Get-Content -Path $confPath -Raw
+    $privateKey = Get-Field 'PrivateKey\s*=\s*([^\r\n]+)' $confContent
+    $addressRaw = Get-Field 'Address\s*=\s*([^\r\n]+)' $confContent
+    $publicKey  = Get-Field 'PublicKey\s*=\s*([^\r\n]+)' $confContent
+    $endpoint   = Get-Field 'Endpoint\s*=\s*([^\r\n]+)' $confContent
+
+    if (-not $privateKey -or -not $addressRaw -or -not $publicKey -or -not $endpoint) {
+        [System.Windows.Forms.MessageBox]::Show("Could not read that .conf file. Please check it's a valid WireGuard config export.", "Parse error", "OK", "Error") | Out-Null
+        return $false
+    }
+
+    $desktopConfig = Join-Path $base "config.json"
+    if (Test-Path $desktopConfig) {
+        try {
+            $desktopKey = (Get-Content -Raw $desktopConfig | ConvertFrom-Json).endpoints[0].private_key
+            if ($desktopKey -eq $privateKey) {
+                [System.Windows.Forms.MessageBox]::Show("That's the same config this PC is using.`n`nYour VPN provider allows one connection per config, so sharing it makes both devices drop in and out - Discord will look connected but calls won't work.`n`nDownload a second WireGuard config from your provider (Proton VPN lets you create several) and pick that one for the phone.", "Needs its own config", "OK", "Warning") | Out-Null
+                return $false
+            }
+        } catch { }
+    }
+
+    $addressParts = ($addressRaw -split ",") | ForEach-Object { $_.Trim() } | Where-Object { $_ }
+    $addressIPv4 = $addressParts | Where-Object { $_ -notmatch ':' } | Select-Object -First 1
+    $addressIPv6 = $addressParts | Where-Object { $_ -match ':' } | Select-Object -First 1
+    $endpointAddresses = @(); $allowedIps = @()
+    if ($addressIPv4) { $endpointAddresses += $addressIPv4; $allowedIps += "0.0.0.0/0" }
+    if ($addressIPv6) { $endpointAddresses += $addressIPv6; $allowedIps += "::/0" }
+    $dnsStrategy = if ($addressIPv6) { "prefer_ipv4" } else { "ipv4_only" }
+
+    $endpointParts = $endpoint -split ":"
+    Write-AndroidConfig $endpointAddresses $allowedIps $privateKey $endpointParts[0] $endpointParts[1] $publicKey $dnsStrategy
+    return $true
+}
 
 function Write-AndroidConfig($endpointAddresses, $allowedIps, $privateKey, $endpointHost, $endpointPort, $publicKey, $dnsStrategy) {
     # Android does per-app VPN properly - VpnService takes a package list - so
