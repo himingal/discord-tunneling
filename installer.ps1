@@ -481,6 +481,15 @@ function Build-ConfigFromConf($confPath) {
         auto_detect_interface = $true
         default_domain_resolver = "dns-direct"
         rules = @(
+            # auto_route points the TUN's own DNS at an address inside the TUN
+            # subnet, so without hijacking, every lookup the machine makes is
+            # treated as ordinary traffic aimed at that address and rejected
+            # ("loopback connection to TUN range"). Windows then falls back to
+            # the physical adapter's resolver, which works but is slow, floods
+            # the log, and skips the dns block entirely - meaning Discord's
+            # lookups never take the dns-vpn path they're routed to below.
+            [ordered]@{ action = "sniff" }
+            [ordered]@{ protocol = "dns"; action = "hijack-dns" }
             [ordered]@{ process_name = $discordProcesses; action = "route"; outbound = "vpn" }
         )
         final = "direct"
@@ -653,8 +662,13 @@ function Wait-ForTunAdapter($timeoutSeconds = 40) {
     $deadline = (Get-Date).AddSeconds($timeoutSeconds)
     while ((Get-Date) -lt $deadline) {
         if (-not (Test-TunnelRunning)) { return $false }
+        # sing-box names the adapter "tun0" and describes it as "sing-tun
+        # Tunnel" - not "Wintun", which is only the driver underneath it.
         $adapter = Get-NetAdapter -ErrorAction SilentlyContinue |
-            Where-Object { $_.InterfaceDescription -like "*Wintun*" -and $_.Status -eq "Up" }
+            Where-Object { $_.Status -eq "Up" -and
+                ($_.InterfaceDescription -like "*sing-tun*" -or
+                 $_.InterfaceDescription -like "*Wintun*" -or
+                 $_.Name -like "tun*") }
         if ($adapter) {
             # Up, but the routing table needs a beat to catch up
             Start-Sleep -Seconds 3
