@@ -6,7 +6,7 @@
 ; ============================================================
 
 #define MyAppName "Discord Single-Tunneling"
-#define MyAppVersion "2.0"
+#define MyAppVersion "2.1"
 #define MyAppPublisher "mingal"
 #define MyAppExeName "installer.ps1"
 
@@ -20,7 +20,7 @@ DefaultGroupName={#MyAppName}
 DisableProgramGroupPage=yes
 OutputDir=output
 OutputBaseFilename=DiscordTunneling-Setup
-SetupIconFile=assets\app.ico
+SetupIconFile=assets\app_settings.ico
 Compression=lzma
 SolidCompression=yes
 WizardStyle=modern
@@ -34,6 +34,7 @@ Name: "english"; MessagesFile: "compiler:Default.isl"
 ; Place these files in the same folder as this .iss before compiling:
 Source: "installer.ps1"; DestDir: "{app}"; Flags: ignoreversion
 Source: "assets\app.ico"; DestDir: "{app}\assets"; Flags: ignoreversion
+Source: "assets\app_settings.ico"; DestDir: "{app}\assets"; Flags: ignoreversion
 Source: "assets\app_logo.png"; DestDir: "{app}\assets"; Flags: ignoreversion
 Source: "assets\avatar.png"; DestDir: "{app}\assets"; Flags: ignoreversion
 ; If you already have sing-box.exe downloaded, you can include it here too (optional):
@@ -42,10 +43,10 @@ Source: "assets\avatar.png"; DestDir: "{app}\assets"; Flags: ignoreversion
 [Icons]
 Name: "{group}\{#MyAppName}"; Filename: "powershell.exe"; \
     Parameters: "-WindowStyle Hidden -ExecutionPolicy Bypass -File ""{app}\{#MyAppExeName}"""; \
-    IconFilename: "{app}\assets\app.ico"; WorkingDir: "{app}"
+    IconFilename: "{app}\assets\app_settings.ico"; WorkingDir: "{app}"
 Name: "{autodesktop}\{#MyAppName}"; Filename: "powershell.exe"; \
     Parameters: "-WindowStyle Hidden -ExecutionPolicy Bypass -File ""{app}\{#MyAppExeName}"""; \
-    IconFilename: "{app}\assets\app.ico"; WorkingDir: "{app}"; Tasks: desktopicon
+    IconFilename: "{app}\assets\app_settings.ico"; WorkingDir: "{app}"; Tasks: desktopicon
 
 [Tasks]
 Name: "desktopicon"; Description: "Create a desktop shortcut"; GroupDescription: "Additional shortcuts:"

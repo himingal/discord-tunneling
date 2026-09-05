@@ -43,7 +43,9 @@ $LogGray     = [System.Drawing.Color]::FromArgb(120, 120, 125)
 $InfoBoxBg   = [System.Drawing.Color]::FromArgb(252, 235, 244)
 $InfoBoxText = [System.Drawing.Color]::FromArgb(150, 45, 100)
 
-$iconPath = Join-Path $base "assets\app.ico"
+# Gear for this window and the app's own shortcut; the plain logo (app.ico)
+# stays on the "Discord (Tunneling)" launcher so the two are told apart.
+$iconPath = Join-Path $base "assets\app_settings.ico"
 $logoPngPath = Join-Path $base "assets\app_logo.png"
 $avatarPath = Join-Path $base "assets\avatar.png"
 $appIcon = $null
@@ -298,11 +300,34 @@ function Set-Status($text, [System.Drawing.Color]$color) {
     $statusDot.ForeColor = $color
 }
 
+# Config uses schema that landed in 1.12 (rule actions, endpoints,
+# default_domain_resolver). An older binary left over from a previous install
+# loads it wrong or not at all, so a stale sing-box.exe gets replaced.
+$singboxMinimumVersion = [version]"1.12.0"
+
+function Get-SingBoxVersion($exePath) {
+    try {
+        $output = & $exePath version 2>&1 | Select-Object -First 1
+        $m = [regex]::Match([string]$output, '(\d+)\.(\d+)\.(\d+)')
+        if ($m.Success) { return [version]$m.Value }
+    } catch { }
+    return $null
+}
+
 function Ensure-SingBox {
     $singboxExe = Join-Path $base "sing-box.exe"
     if (Test-Path $singboxExe) {
-        Set-Progress "sing-box already present." $LogGreen
-        return $true
+        $installed = Get-SingBoxVersion $singboxExe
+        if ($installed -and $installed -ge $singboxMinimumVersion) {
+            Set-Progress "sing-box already present." $LogGreen
+            return $true
+        }
+        Set-Progress "sing-box is outdated - updating..." $LogYellow
+        Remove-Item $singboxExe -Force -ErrorAction SilentlyContinue
+        if (Test-Path $singboxExe) {
+            [System.Windows.Forms.MessageBox]::Show("An old sing-box.exe is in use and can't be replaced. Stop the tunnel (end sing-box.exe in Task Manager) and click Install again.", "Update blocked", "OK", "Warning") | Out-Null
+            return $false
+        }
     }
     Set-Progress "Downloading sing-box..." $LogGray
     try {
@@ -372,7 +397,33 @@ function Build-ConfigFromConf($confPath) {
         return $false
     }
 
-    $addressIPv4 = ($addressRaw -split ",")[0].Trim()
+    # Support exactly the address families the VPN actually handed us. Claiming
+    # more than that is what made Discord hang: the peer's allowed_ips used to
+    # advertise ::/0 unconditionally, so Discord's IPv6 connections were routed
+    # into a tunnel with no IPv6 address to send them from, and every one of
+    # them died with "missing IPv6 local address" while Discord kept retrying.
+    $addressParts = ($addressRaw -split ",") | ForEach-Object { $_.Trim() } | Where-Object { $_ }
+    $addressIPv4 = $addressParts | Where-Object { $_ -notmatch ':' } | Select-Object -First 1
+    $addressIPv6 = $addressParts | Where-Object { $_ -match ':' } | Select-Object -First 1
+
+    $endpointAddresses = @()
+    $allowedIps = @()
+    $tunAddresses = @("172.19.0.1/30")
+    $tunRouteAddresses = @("0.0.0.0/0")
+    if ($addressIPv4) {
+        $endpointAddresses += $addressIPv4
+        $allowedIps += "0.0.0.0/0"
+    }
+    if ($addressIPv6) {
+        $endpointAddresses += $addressIPv6
+        $allowedIps += "::/0"
+        $tunAddresses += "fdfe:dcba:9876::1/126"
+        $tunRouteAddresses += "::/0"
+    }
+    # Without a v6 address the TUN must not capture v6 at all - traffic it
+    # swallows but can't forward is worse than traffic it never touches.
+    $dnsStrategy = if ($addressIPv6) { "prefer_ipv4" } else { "ipv4_only" }
+
     $endpointParts = $endpoint -split ":"
     $endpointHost = $endpointParts[0]
     $endpointPort = $endpointParts[1]
@@ -415,7 +466,7 @@ function Build-ConfigFromConf($confPath) {
         type = "wireguard"
         tag = "vpn"
         system = $false
-        address = @($addressIPv4)
+        address = $endpointAddresses
         private_key = $privateKey
         mtu = 1408
         peers = @(
@@ -423,7 +474,7 @@ function Build-ConfigFromConf($confPath) {
                 address = $endpointHost
                 port = [int]$endpointPort
                 public_key = $publicKey
-                allowed_ips = @("0.0.0.0/0", "::/0")
+                allowed_ips = $allowedIps
                 persistent_keepalive_interval = 25
             }
         )
@@ -450,8 +501,11 @@ function Build-ConfigFromConf($confPath) {
         # The tunnel runs hidden, so without this every failure is invisible -
         # the app can only report "it didn't work". sing-box.log is where to
         # look first when the tunnel starts but traffic doesn't flow.
+        # "warn", never "info": at info level sing-box logs a line per
+        # connection, and the TUN sees every connection the machine makes.
+        # That produced a 3 GB log file in a few hours of ordinary use.
         log = [ordered]@{
-            level = "info"
+            level = "warn"
             output = "sing-box.log"
             timestamp = $true
         }
@@ -468,6 +522,9 @@ function Build-ConfigFromConf($confPath) {
             rules = @(
                 [ordered]@{ process_name = $discordProcesses; action = "route"; server = "dns-vpn" }
             )
+            # ipv4_only on an IPv4-only tunnel: handing back AAAA records the
+            # tunnel can't reach just makes apps hang on dead connections.
+            strategy = $dnsStrategy
             final = "dns-direct"
         }
         endpoints = @($wireguardEndpoint)
@@ -475,9 +532,10 @@ function Build-ConfigFromConf($confPath) {
             [ordered]@{
                 type = "tun"
                 tag = "tun-in"
-                address = @("172.19.0.1/30", "fdfe:dcba:9876::1/126")
+                address = $tunAddresses
                 mtu = 1400
                 auto_route = $true
+                route_address = $tunRouteAddresses
                 # Deliberately false: strict_route exists to force *everything*
                 # through the tunnel and block anything that escapes it, which
                 # is the opposite of a split tunnel - here the traffic that
@@ -545,16 +603,57 @@ function Set-Autostart($enable) {
         # registered to run elevated at logon instead of a plain Startup
         # shortcut (which Windows cannot silently elevate).
         $action = New-ScheduledTaskAction -Execute (Join-Path $base "sing-box.exe") -Argument "run -c config.json" -WorkingDirectory $base
+
+        # 20s delay: bind_interface names a real adapter, so starting before
+        # the NIC is up just fails.
         $trigger = New-ScheduledTaskTrigger -AtLogOn
-        $principal = New-ScheduledTaskPrincipal -UserId ([Security.Principal.WindowsIdentity]::GetCurrent().Name) -RunLevel Highest -LogonType Interactive
-        $settings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -StartWhenAvailable
-        Register-ScheduledTask -TaskName $autostartTaskName -Action $action -Trigger $trigger -Principal $principal -Settings $settings -Force | Out-Null
+        $trigger.Delay = "PT20S"
+
+        # ExecutionTimeLimit must be explicitly unlimited - the default kills
+        # the task after 3 days, which would silently drop the tunnel on any
+        # machine that stays up that long.
+        $settings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries `
+            -StartWhenAvailable -ExecutionTimeLimit ([TimeSpan]::Zero) `
+            -RestartCount 3 -RestartInterval (New-TimeSpan -Minutes 1)
+
+        # S4U rather than Interactive: an interactive task runs sing-box in the
+        # user's session, which pops a console window on every logon. It looks
+        # broken, and closing that window kills the tunnel. S4U runs it in the
+        # background with no window and still elevates via RunLevel Highest.
+        $userId = [Security.Principal.WindowsIdentity]::GetCurrent().Name
+        $registered = $false
+        try {
+            $principal = New-ScheduledTaskPrincipal -UserId $userId -RunLevel Highest -LogonType S4U
+            Register-ScheduledTask -TaskName $autostartTaskName -Action $action -Trigger $trigger -Principal $principal -Settings $settings -Force -ErrorAction Stop | Out-Null
+            $registered = $true
+        } catch {
+            $registered = $false
+        }
+        if (-not $registered) {
+            # S4U needs the "Log on as a batch job" right, which not every
+            # account has. A visible console beats no autostart at all.
+            $principal = New-ScheduledTaskPrincipal -UserId $userId -RunLevel Highest -LogonType Interactive
+            Register-ScheduledTask -TaskName $autostartTaskName -Action $action -Trigger $trigger -Principal $principal -Settings $settings -Force | Out-Null
+        }
     }
 }
 
 function Stop-Tunnel {
     Get-Process -Name "sing-box" -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
     Start-Sleep -Milliseconds 500
+}
+
+function Reset-OversizedLog {
+    # sing-box appends forever and has no rotation of its own. At warn level the
+    # log stays tiny, but an older install logging at info level filled 3 GB in
+    # an afternoon - so a runaway log gets dropped while the tunnel is stopped
+    # (the only moment the file isn't locked). Small logs are kept: they're the
+    # evidence for whatever went wrong last run.
+    $logPath = Join-Path $base "sing-box.log"
+    if (-not (Test-Path $logPath)) { return }
+    if ((Get-Item $logPath).Length -gt 20MB) {
+        Remove-Item $logPath -Force -ErrorAction SilentlyContinue
+    }
 }
 
 function Test-ConnectivityOk {
@@ -591,6 +690,7 @@ function Restart-Tunnel {
     # process left over from a previous install/provider would silently keep
     # the old TUN/routing setup instead of the one just generated.
     Stop-Tunnel
+    Reset-OversizedLog
     return (Start-Tunnel)
 }
 
