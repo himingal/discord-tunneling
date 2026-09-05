@@ -2,6 +2,7 @@
 config.json
 *.conf
 iniciar.vbs
+tunnel-launcher.ps1
 sing-box.exe
 singbox_temp*/
 singbox_temp.zip

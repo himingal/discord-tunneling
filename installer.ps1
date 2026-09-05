@@ -615,7 +615,11 @@ function Write-TunnelLauncher {
     # the first time the machine moved from Ethernet to Wi-Fi.
     $launcherPath = Join-Path $base "tunnel-launcher.ps1"
     $launcher = @'
-$base = Split-Path -Parent $MyInvocation.MyCommand.Path
+# $PSScriptRoot first: $MyInvocation.MyCommand.Path comes back empty in some
+# unattended hosts, and this runs at logon where a null path fails silently.
+$base = $PSScriptRoot
+if (-not $base) { $base = Split-Path -Parent $MyInvocation.MyCommand.Path }
+if (-not $base) { exit 1 }
 Set-Location $base
 
 function Get-PhysicalInterfaceAlias {
