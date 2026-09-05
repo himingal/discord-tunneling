@@ -6,7 +6,7 @@
 ; ============================================================
 
 #define MyAppName "Discord Single-Tunneling"
-#define MyAppVersion "2.8"
+#define MyAppVersion "3.0"
 #define MyAppPublisher "mingal"
 #define MyAppExeName "installer.ps1"
 

@@ -3,20 +3,94 @@
 
 # Discord Single-Tunneling
 
-Route only Discord's traffic through a WireGuard VPN, while the rest of
-your system keeps using your normal internet connection. Built to work
-around Discord's Go Live / camera restriction in regions where it's
-currently disabled, without paying for a VPN provider's per-app split
-tunneling feature and without slowing down the rest of your PC.
+Route only Discord's traffic through a WireGuard VPN, while the rest of your
+system keeps using your normal internet connection. Built to work around
+Discord's Go Live / camera restriction in regions where it's currently
+disabled, without paying for a VPN provider's per-app split tunneling feature
+and without slowing down the rest of your PC.
+
+Voice, video and screen share included — not just chat.
+
+## What you need
+
+- **Windows 10 or 11**
+- **Administrator rights.** The tunnel creates a virtual network adapter, which
+  Windows only allows with elevation. You'll get one UAC prompt.
+- **A WireGuard `.conf` file** from any VPN provider — Proton VPN, Mullvad,
+  Windscribe and others all export these, and free tiers usually include it.
+- **Discord desktop app** installed.
+
+## Step 1 — Get your WireGuard config file
+
+Log in to your VPN provider and download a **WireGuard configuration** file.
+It's a small `.conf` text file.
+
+- **Proton VPN:** [account.protonvpn.com/downloads](https://account.protonvpn.com/downloads)
+  → *WireGuard configuration* → pick a server → **Download**.
+- Other providers: look for "WireGuard", "Manual configuration" or
+  "Config files" in your account dashboard.
+
+Save it somewhere you can find it — your Downloads folder is fine.
+
+> The file contains your private VPN key. Don't share it or commit it anywhere.
+
+## Step 2 — Download the installer
+
+Go to the [**Releases**](https://github.com/himingal/discord-tunneling/releases/latest)
+page and download **`DiscordTunneling-Setup.exe`** from the latest release.
+
+Windows SmartScreen may warn you about an unrecognized publisher, since the
+installer isn't code-signed. Click **More info → Run anyway**, or build it
+yourself from source (see below).
+
+## Step 3 — Install
+
+Run `DiscordTunneling-Setup.exe` and click through the wizard
+(Next → Next → Finish). It installs the app and creates a shortcut with a
+**pink gear icon**, named *Discord Single-Tunneling*.
+
+Nothing is tunneled yet — the installer only puts the app in place.
+
+## Step 4 — Import your VPN config
+
+Open **Discord Single-Tunneling** (the gear icon).
+
+1. **Accept the UAC prompt.** The app needs Administrator rights to create the
+   tunnel adapter, so it asks once every time it starts.
+2. Leave **"Start automatically when Windows starts"** checked, unless you'd
+   rather start the tunnel by hand.
+3. Click **Select VPN config file & Install** and pick the `.conf` file from
+   Step 1.
+
+The app then downloads sing-box and the wintun driver, builds the
+configuration, starts the tunnel, and **checks that your PC is still online**.
+If anything went wrong it shuts the tunnel back down by itself and tells you —
+your connection is never left broken.
+
+When the status dot turns **green — "Tunnel running"**, you're done.
+
+## Step 5 — Use it
+
+Just open Discord. Any Discord window is routed through the VPN while the
+tunnel is running — the desktop shortcut, the Start Menu, the tray icon, all
+the same.
+
+- You can **close the app window**; the tunnel keeps running in the background.
+- With autostart enabled, the tunnel comes up on its own at every boot, and
+  Discord waits for it before opening.
+- Reopening the app when the tunnel is stopped **starts it again
+  automatically** — you don't need to re-import your `.conf`.
+
+To confirm it's working, open Discord and try joining someone's screen share,
+or check that your Go Live / camera options are available.
 
 ## How it works
 
 [sing-box](https://github.com/SagerNet/sing-box) creates a virtual network
-adapter (TUN) backed by a WireGuard tunnel, and a routing rule matches
-traffic **by process name** (`Discord.exe`/`Update.exe`) instead of relying
-on Discord's `--proxy-server` launch flag. Everything Discord's process
-sends — chat, login, and voice/video/screen share (WebRTC/UDP) — goes
-through the VPN; every other process on your PC keeps using its normal
+adapter (TUN) backed by your WireGuard tunnel, and a routing rule matches
+traffic **by process name** (`Discord.exe` / `Update.exe`). Everything
+Discord's process sends — chat, login, and voice/video/screen share
+(WebRTC/UDP) — goes through the VPN; every other process keeps its normal
 route.
 
 ```
@@ -32,98 +106,99 @@ route.
        provider                    connection)
 ```
 
-This replaces an earlier SOCKS5-proxy-based design. A plain
-`--proxy-server=socks5://…` flag only ever carries TCP/HTTP(S) traffic —
-Chromium/Electron never routes WebRTC's UDP sockets through it — so voice,
-video and screen share used to fall back to your normal connection
-regardless of the flag. Routing by process name at the TUN/network layer
-catches that traffic too.
-
-## Requirements
-
-- Windows 10/11
-- Administrator rights — creating the TUN adapter and setting OS routes
-  needs elevation, so the app now asks for a UAC prompt on launch
-- Any VPN provider that can export a standard **WireGuard `.conf` file**
-  (Proton VPN, Mullvad, Windscribe, etc. — even free tiers usually support this)
-- Discord desktop app installed
-
-## Quick start
-
-1. Download your `.conf` file from your VPN provider's dashboard
-   (look for "WireGuard configuration" under Downloads/Account).
-2. Run `installer.ps1` (double-click, or right-click → Run with PowerShell).
-   A small app window opens — no console/terminal is shown.
-3. Check or uncheck "Start automatically when Windows starts".
-4. Click **Select VPN config file & Install** and choose your `.conf` file.
-5. Once it finishes, use the **"Discord (Tunneling)"** shortcut created on your
-   desktop, or the **Open Discord (Tunneling)** button inside the app.
-
-## Building the .exe installer (optional)
-
-This repo includes an [Inno Setup](https://jrsoftware.org/isinfo.php)
-script for anyone who wants a standard Windows installer experience
-(Next > Next > Finish) instead of running the PowerShell script directly.
-
-1. Install Inno Setup.
-2. Open `setup.iss` in the Inno Setup Compiler.
-3. Build → Compile (Ctrl+F9).
-4. Find `DiscordTunneling-Setup.exe` in the generated `output/` folder.
-
-## Interface
-
-The app is a small native Windows GUI (built with .NET WinForms via
-PowerShell) with a status indicator and a checkbox for autostart —
-no PowerShell console window is shown at any point.
+Earlier versions used Discord's `--proxy-server` launch flag pointed at a local
+SOCKS5 proxy. That flag only ever carries TCP/HTTP(S) traffic — Chromium never
+routes WebRTC's UDP sockets through it — so voice, video and screen share
+silently fell back to the normal connection. Starting your own stream usually
+worked; joining someone else's didn't. Matching by process name at the network
+layer catches that traffic too.
 
 ## What the installer does
 
-- Relaunches itself elevated (one UAC prompt) — required to create the
-  TUN adapter and set OS routes.
-- Downloads the latest [sing-box](https://github.com/SagerNet/sing-box)
-  release automatically if it's not already present.
-- Downloads the [wintun](https://www.wintun.net/) driver (`wintun.dll`)
-  that sing-box needs to create the virtual adapter on Windows.
-- Parses the standard WireGuard fields (`PrivateKey`, `Address`,
-  `PublicKey`, `Endpoint`) from your `.conf` file — no manual editing needed.
-- Generates a `config.json` for sing-box: a TUN inbound, the WireGuard
-  endpoint, and a route/DNS rule that matches `Discord.exe`/`Update.exe`
-  by process name and sends only that traffic (TCP **and** UDP) to the
-  VPN — everything else falls through to your normal connection.
-- Creates a **"Discord (Tunneling)"** desktop shortcut (no launch flags
-  needed anymore — matching happens by process name, so any Discord
-  window is tunneled while the app is running).
-- Verifies the machine is still online after starting the tunnel, and
-  **automatically shuts the tunnel back down if it isn't**. Because the
-  TUN adapter takes over the default route, a bad config can take the
-  whole PC offline; rather than leaving you stranded with no connection
-  to look up a fix with, the installer rolls back on its own.
-- Optionally registers the tunnel to start on Windows boot, via a
-  Scheduled Task set to run elevated at logon (a plain Startup-folder
-  shortcut can't silently request the admin rights TUN needs). Autostart
-  is only registered if the connectivity check above passed, so a broken
-  config can never come back at every logon.
+- Relaunches itself elevated (one UAC prompt), required for the TUN adapter.
+- Downloads [sing-box](https://github.com/SagerNet/sing-box) and the
+  [wintun](https://www.wintun.net/) driver if they aren't already present, and
+  replaces a sing-box binary that's too old for the config it generates.
+- Reads `PrivateKey`, `Address`, `PublicKey` and `Endpoint` from your `.conf` —
+  no manual editing.
+- Generates `config.json`: a TUN inbound, the WireGuard endpoint, and
+  route/DNS rules matching Discord by process name. IPv6 is only enabled when
+  your provider actually gave you an IPv6 address.
+- Creates the **Discord (Tunneling)** desktop shortcut.
+- Verifies the PC is still online afterwards and **rolls the tunnel back
+  automatically** if it isn't — the TUN takes over the default route, so a bad
+  config could otherwise take the whole machine offline.
+- Registers autostart as a Scheduled Task that runs elevated and windowless at
+  logon, plus a small waiter that holds Discord until the tunnel is up. This is
+  only registered once the connectivity check passes, so a broken config can't
+  come back at every boot.
+
+## Troubleshooting
+
+**Discord hangs on "Starting…"**
+Almost always a leftover shortcut from v1.x still passing
+`--proxy-server=socks5://127.0.0.1:1080`, a proxy that no longer exists.
+Open the app and click **Reconfigure** once; it rewrites the desktop and
+Startup shortcuts.
+
+**The tunnel won't stay up**
+Look at `sing-box.log` in the install folder — that's the first place to check
+when the tunnel starts but traffic doesn't flow. Errors are logged at `warn`
+level, so a healthy tunnel leaves it nearly empty.
+
+**My whole PC lost internet**
+It shouldn't — the app checks and rolls back on its own. If a tunnel is somehow
+left running, end `sing-box.exe` in Task Manager and your connection returns
+immediately.
+
+**I switched from Ethernet to Wi-Fi**
+Nothing to do. The adapter is re-detected every time the tunnel starts.
+
+**Antivirus blocked something**
+New TUN adapters and auto-downloaded executables sometimes get flagged. If
+sing-box won't start, check your AV logs first.
+
+## Building from source
+
+The repo includes an [Inno Setup](https://jrsoftware.org/isinfo.php) script if
+you'd rather build the installer yourself:
+
+1. Install Inno Setup.
+2. Open `setup.iss` in the Inno Setup Compiler.
+3. **Build → Compile** (Ctrl+F9).
+4. Find `DiscordTunneling-Setup.exe` in the generated `output/` folder.
+
+You can also skip the installer entirely and run `installer.ps1` directly
+(right-click → Run with PowerShell). If you do, keep it in a folder you won't
+move — the tunnel's config and autostart task point at wherever you ran it
+from, and having a second copy elsewhere leads to two installs fighting over
+the same tunnel.
 
 ## Known limitations
 
-- **Upgrading from an older SOCKS5-based install:** click
-  **"Reconfigure"** once after updating. This regenerates `config.json`
-  for the new TUN-based setup, refreshes the desktop shortcut (drops the
-  old `--proxy-server` flag, which would otherwise point at a proxy that
-  no longer exists), and replaces the old Startup-folder autostart entry
-  with the new Scheduled Task.
-- **Any Discord window is tunneled while the tunnel is running** — since
-  matching happens by process name rather than by a launch flag, there's
-  no longer a distinction between a "regular" and "tunneled" Discord
-  instance on the same PC. Opening Discord from the Start Menu or the
-  dedicated shortcut has the same effect once the tunnel is active.
-- Antivirus/EDR software occasionally flags new TUN/WinTun adapters or
-  auto-downloaded executables; if sing-box fails to start, check your
-  AV logs first.
+- **Any Discord window is tunneled while the tunnel runs.** Matching is by
+  process name, not by a launch flag, so there's no separate "untunneled"
+  Discord on the same PC.
+- **Mobile isn't covered.** See below.
+- If you need guaranteed 100% tunneling for non-Discord traffic too, or would
+  rather not grant admin rights, run Discord in a lightweight VM with the VPN
+  applied to its whole network instead.
 
-If you need guaranteed 100% tunneling for non-Discord traffic too (or
-prefer not to grant admin rights), run Discord inside a lightweight VM
-with the VPN configured for its entire network instead.
+## What about mobile?
+
+Not supported here, and the answer differs sharply by platform:
+
+- **Android** — very doable, and you don't need this project. Android's
+  `VpnService` supports per-app routing natively. Either use
+  [sing-box for Android](https://github.com/SagerNet/sing-box/releases)
+  (import the same `.conf`, then enable **Per-app proxy** and select Discord),
+  or just use your VPN provider's own app — Proton VPN's Android client has
+  split tunneling built in.
+- **iOS** — not really possible. Per-app VPN exists only for devices managed
+  through an MDM; consumer apps can't route a single app. The closest
+  approximation is routing by destination instead of by app, sending only
+  Discord's IP ranges through the tunnel, which sing-box for iOS can express —
+  but it's a rougher match and breaks whenever Discord changes infrastructure.
 
 ## Author
 
