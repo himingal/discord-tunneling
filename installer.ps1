@@ -378,13 +378,7 @@ function Build-ConfigFromConf($confPath) {
     $endpointPort = $endpointParts[1]
 
     # If the VPN server is a literal IP, exclude it from the TUN's captured
-    # routes so sing-box's own WireGuard handshake/keepalive packets keep
-    # using the normal physical route instead of looping back into the TUN.
-    # (Binding that dial to a specific interface via auto_detect_interface/
-    # default_interface instead is a known sing-box/Windows incompatibility -
-    # it errors with "listen udp6 ... address family not supported" whenever
-    # the active adapter has IPv6 disabled, which blocks the handshake
-    # entirely. See SagerNet/sing-box#2900.)
+    # routes too, as a second line of defense alongside bind_interface below.
     $routeExcludeAddresses = @()
     if ($endpointHost -match '^\d{1,3}(\.\d{1,3}){3}$') {
         $routeExcludeAddresses += "$endpointHost/32"
@@ -395,10 +389,72 @@ function Build-ConfigFromConf($confPath) {
     # a plain SOCKS5 proxy only ever carries the TCP/HTTP(S) traffic.
     $discordProcesses = @("Discord.exe", "Update.exe")
 
+    # auto_route on the TUN makes it the OS's default route for everything,
+    # so the "direct" outbound (which carries all non-Discord traffic) must
+    # explicitly escape back out through the real physical adapter, or every
+    # non-Discord connection on the whole PC loops into the TUN with nowhere
+    # to go (this took down all networking, including DNS, during testing).
+    # route.auto_detect_interface/default_interface do this too, but combined
+    # with a WireGuard *endpoint* they hit a Windows-only sing-box bug (fails
+    # to bind a udp6 socket - "address family not supported" - on any machine
+    # where the active adapter has IPv6 disabled, which blocks the WireGuard
+    # handshake entirely: see SagerNet/sing-box#2900). Binding "direct"
+    # directly to the detected physical interface, and having the WireGuard
+    # endpoint detour through that already-bound "direct" outbound instead of
+    # binding itself, sidesteps the bug while still escaping the TUN.
+    $physicalInterface = $null
+    try {
+        $defaultRoute = Get-NetRoute -DestinationPrefix "0.0.0.0/0" -ErrorAction Stop | Sort-Object -Property RouteMetric | Select-Object -First 1
+        $physicalInterface = (Get-NetIPInterface -InterfaceIndex $defaultRoute.InterfaceIndex -AddressFamily IPv4 -ErrorAction Stop | Select-Object -First 1).InterfaceAlias
+    } catch {
+        $physicalInterface = $null
+    }
+
+    $directOutbound = [ordered]@{ type = "direct"; tag = "direct" }
+    $wireguardEndpoint = [ordered]@{
+        type = "wireguard"
+        tag = "vpn"
+        system = $false
+        address = @($addressIPv4)
+        private_key = $privateKey
+        mtu = 1408
+        peers = @(
+            [ordered]@{
+                address = $endpointHost
+                port = [int]$endpointPort
+                public_key = $publicKey
+                allowed_ips = @("0.0.0.0/0", "::/0")
+                persistent_keepalive_interval = 25
+            }
+        )
+    }
+    $routeBlock = [ordered]@{
+        default_domain_resolver = "dns-direct"
+        rules = @(
+            [ordered]@{ process_name = $discordProcesses; action = "route"; outbound = "vpn" }
+        )
+        final = "direct"
+    }
+
+    if ($physicalInterface) {
+        $directOutbound["bind_interface"] = $physicalInterface
+        $wireguardEndpoint["detour"] = "direct"
+    } else {
+        # Couldn't detect the physical adapter - fall back to sing-box's own
+        # detection. Slightly more likely to hit the Windows bug above, but
+        # better than leaving "direct" with no way to escape the TUN at all.
+        $routeBlock["auto_detect_interface"] = $true
+    }
+
     $configObj = [ordered]@{
         dns = [ordered]@{
             servers = @(
-                [ordered]@{ type = "local"; tag = "dns-direct" }
+                # NOT "local": with auto_route on, a "local" server hands the
+                # query to the OS resolver, whose reply packet gets captured
+                # by the TUN again and re-resolved forever - a known sing-box
+                # DNS loop (SagerNet/sing-box#3637). An explicit resolver with
+                # its own detour skips the OS resolver entirely.
+                [ordered]@{ type = "udp"; tag = "dns-direct"; server = "1.1.1.1"; server_port = 53; detour = "direct" }
                 [ordered]@{ type = "udp"; tag = "dns-vpn"; server = "1.1.1.1"; server_port = 53; detour = "vpn" }
             )
             rules = @(
@@ -406,25 +462,7 @@ function Build-ConfigFromConf($confPath) {
             )
             final = "dns-direct"
         }
-        endpoints = @(
-            [ordered]@{
-                type = "wireguard"
-                tag = "vpn"
-                system = $false
-                address = @($addressIPv4)
-                private_key = $privateKey
-                mtu = 1408
-                peers = @(
-                    [ordered]@{
-                        address = $endpointHost
-                        port = [int]$endpointPort
-                        public_key = $publicKey
-                        allowed_ips = @("0.0.0.0/0", "::/0")
-                        persistent_keepalive_interval = 25
-                    }
-                )
-            }
-        )
+        endpoints = @($wireguardEndpoint)
         inbounds = @(
             [ordered]@{
                 type = "tun"
@@ -432,21 +470,19 @@ function Build-ConfigFromConf($confPath) {
                 address = @("172.19.0.1/30", "fdfe:dcba:9876::1/126")
                 mtu = 1400
                 auto_route = $true
-                strict_route = $true
+                # Deliberately false: strict_route exists to force *everything*
+                # through the tunnel and block anything that escapes it, which
+                # is the opposite of a split tunnel - here the traffic that
+                # bypasses the TUN is the whole point. On Windows it also
+                # interferes with multihomed DNS resolution and is documented
+                # to break some applications.
+                strict_route = $false
                 stack = "system"
                 route_exclude_address = $routeExcludeAddresses
             }
         )
-        outbounds = @(
-            [ordered]@{ type = "direct"; tag = "direct" }
-        )
-        route = [ordered]@{
-            default_domain_resolver = "dns-direct"
-            rules = @(
-                [ordered]@{ process_name = $discordProcesses; action = "route"; outbound = "vpn" }
-            )
-            final = "direct"
-        }
+        outbounds = @($directOutbound)
+        route = $routeBlock
     }
 
     $configPath = Join-Path $base "config.json"
@@ -508,33 +544,85 @@ function Set-Autostart($enable) {
     }
 }
 
+function Stop-Tunnel {
+    Get-Process -Name "sing-box" -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
+    Start-Sleep -Milliseconds 500
+}
+
+function Test-ConnectivityOk {
+    # Verifies the machine can still reach the internet while the tunnel is up.
+    # Both halves matter and fail differently:
+    #  - the raw TCP connect proves non-Discord packets still escape the TUN
+    #    and reach the physical adapter (a broken "direct" outbound hangs here)
+    #  - the DNS lookup proves name resolution isn't looping back into the TUN
+    #    (the classic auto_route + "local" resolver deadlock)
+    $tcpOk = $false
+    try {
+        $client = New-Object System.Net.Sockets.TcpClient
+        $async = $client.BeginConnect("1.1.1.1", 443, $null, $null)
+        $tcpOk = $async.AsyncWaitHandle.WaitOne(4000, $false) -and $client.Connected
+        $client.Close()
+    } catch {
+        $tcpOk = $false
+    }
+    if (-not $tcpOk) { return $false }
+
+    $dnsOk = $false
+    try {
+        [System.Net.Dns]::GetHostEntry("cloudflare.com") | Out-Null
+        $dnsOk = $true
+    } catch {
+        $dnsOk = $false
+    }
+    return $dnsOk
+}
+
 function Restart-Tunnel {
     # Always used after (re)writing config.json - a sing-box process already
     # running keeps using whatever config it loaded at launch, so a stale
     # process left over from a previous install/provider would silently keep
     # the old TUN/routing setup instead of the one just generated.
-    if (Test-TunnelRunning) {
-        Get-Process -Name "sing-box" -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
-        Start-Sleep -Milliseconds 500
-    }
-    Start-Tunnel
+    Stop-Tunnel
+    return (Start-Tunnel)
 }
 
 function Start-Tunnel {
     if (Test-TunnelRunning) {
         Set-Status "Tunnel running" $LogGreen
-        return
+        return $true
     }
     $singboxExe = Join-Path $base "sing-box.exe"
     Start-Process -FilePath $singboxExe -ArgumentList "run -c config.json" -WorkingDirectory $base -WindowStyle Hidden
-    Start-Sleep -Seconds 1
-    if (Test-TunnelRunning) {
-        Set-Progress "Tunnel started." $LogGreen
-        Set-Status "Tunnel running" $LogGreen
-    } else {
+    Start-Sleep -Seconds 2
+
+    if (-not (Test-TunnelRunning)) {
         Set-Progress "Tunnel failed to start." $LogRed
         Set-Status "Tunnel failed to start" $LogRed
+        return $false
     }
+
+    # The TUN takes over the machine's default route, so a bad config doesn't
+    # just fail - it can take the whole PC offline. Verify the machine is still
+    # reachable and roll the tunnel back automatically if it isn't, instead of
+    # leaving someone stranded without a connection to go look up a fix with.
+    Set-Progress "Verifying connectivity..." $LogGray
+    $ok = $false
+    foreach ($attempt in 1..3) {
+        if (Test-ConnectivityOk) { $ok = $true; break }
+        Start-Sleep -Seconds 2
+    }
+
+    if (-not $ok) {
+        Stop-Tunnel
+        Set-Progress "Tunnel rolled back." $LogRed
+        Set-Status "Tunnel broke connectivity - rolled back" $LogRed
+        [System.Windows.Forms.MessageBox]::Show("The tunnel started but the PC lost internet access, so it was shut down automatically and your connection has been restored.`n`nNothing is left running and autostart was not enabled, so a reboot won't bring this back.`n`nThis usually means sing-box couldn't route non-Discord traffic back out through your normal adapter. Please report this along with your Windows version and network setup.", "Tunnel rolled back", "OK", "Warning") | Out-Null
+        return $false
+    }
+
+    Set-Progress "Tunnel started." $LogGreen
+    Set-Status "Tunnel running" $LogGreen
+    return $true
 }
 
 # ============================================================
@@ -561,10 +649,14 @@ $installButton.Add_Click({
     if (-not (Build-ConfigFromConf $dialog.FileName)) { $installButton.Enabled = $true; return }
 
     New-DiscordShortcut | Out-Null
-    Set-Autostart $autostartCheck.Checked
-    Restart-Tunnel
 
-    $openButton.Enabled = $true
+    # Autostart is only registered once the tunnel has proven it keeps the
+    # machine online - otherwise a bad config would come back at every logon,
+    # with no working connection to fix it from.
+    $tunnelOk = Restart-Tunnel
+    Set-Autostart ($autostartCheck.Checked -and $tunnelOk)
+
+    $openButton.Enabled = $tunnelOk
     $installButton.Text = "Reconfigure (select a different .conf)"
     $installButton.Enabled = $true
 })

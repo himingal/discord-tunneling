@@ -93,9 +93,16 @@ no PowerShell console window is shown at any point.
 - Creates a **"Discord (Tunneling)"** desktop shortcut (no launch flags
   needed anymore — matching happens by process name, so any Discord
   window is tunneled while the app is running).
+- Verifies the machine is still online after starting the tunnel, and
+  **automatically shuts the tunnel back down if it isn't**. Because the
+  TUN adapter takes over the default route, a bad config can take the
+  whole PC offline; rather than leaving you stranded with no connection
+  to look up a fix with, the installer rolls back on its own.
 - Optionally registers the tunnel to start on Windows boot, via a
   Scheduled Task set to run elevated at logon (a plain Startup-folder
-  shortcut can't silently request the admin rights TUN needs).
+  shortcut can't silently request the admin rights TUN needs). Autostart
+  is only registered if the connectivity check above passed, so a broken
+  config can never come back at every logon.
 
 ## Known limitations
 
