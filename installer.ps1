@@ -1277,9 +1277,12 @@ font-weight:600;font-size:14px;padding:10px 18px;border-radius:10px}
     }
     return $script:androidHandoff.Url
 }
-# Discord's Play Store package. Anything else (a beta build, a fork) can be
-# added to this list and the file regenerated.
-$androidPackages = @("com.discord")
+# The Play Store build plus the common modified clients. Listing a package that
+# isn't installed is harmless, and covering them by default beats a silent
+# no-match: the tunnel starts, reports zero connections, and nothing explains
+# why. Anything else can be picked in sing-box's per-app proxy screen, which
+# lists apps by name and overrides this list.
+$androidPackages = @("com.discord", "com.aliucord", "dev.beefers.vendetta", "com.vendetta.xposed")
 
 function New-AndroidConfigFromConf($confPath) {
     # The phone needs a VPN config of its own. WireGuard identifies a peer by

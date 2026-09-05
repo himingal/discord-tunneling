@@ -255,6 +255,10 @@ Android asks once to allow the VPN connection — accept it.
 That's it. Discord goes through the VPN; every other app on the phone keeps its
 normal connection.
 
+**Check it worked:** with Discord open, the sing-box Dashboard should show
+Outbound connections above zero. If it sits at 0, see the first note below —
+your Discord build's package name probably differs from the one in the profile.
+
 ### If the phone can't reach the PC
 
 The app opens the firewall for its own port while the handoff window is up, but
@@ -264,9 +268,15 @@ the button in the same window — since it needs no network.
 
 ### Notes
 
-- **Don't touch the per-app proxy screen in sing-box's settings.** The app's UI
-  setting *overrides* what's in the config file, so leaving it alone is what
-  keeps `include_package` in charge.
+- **If the Dashboard shows 0 connections while Discord is open**, the package
+  filter isn't matching. The profile targets `com.discord`, which is the Play
+  Store build — modified clients (Aliucord, Revenge, Bunny) and some clones use
+  a different package name entirely.
+
+  Fix it in **Settings → Per-app proxy → select Discord**. That screen lists
+  apps by their visible name, so it resolves the right package whichever build
+  you have, and it *overrides* `include_package`, so it wins. Leave it alone
+  only while the config's filter is actually working.
 - **The profile is imported as a Remote one**, so sing-box remembers the PC's
   address. The configuration itself is already downloaded and keeps working
   after the PC's handoff stops — but leave auto-update off, or the profile will
