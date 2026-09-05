@@ -6,19 +6,28 @@
 #  leaving the rest of the system on the normal connection.
 # ============================================================
 
-if ($env:DT_HIDDEN -ne "1") {
+Add-Type -AssemblyName System.Windows.Forms
+Add-Type -AssemblyName System.Drawing
+
+# TUN mode needs to create a virtual network adapter and set OS routes,
+# which requires an elevated (Administrator) process on Windows.
+$isAdmin = ([Security.Principal.WindowsPrincipal] [Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
+
+if ($env:DT_HIDDEN -ne "1" -or -not $isAdmin) {
     $env:DT_HIDDEN = "1"
     $psi = New-Object System.Diagnostics.ProcessStartInfo
     $psi.FileName = "powershell.exe"
     $psi.Arguments = "-WindowStyle Hidden -ExecutionPolicy Bypass -File `"$PSCommandPath`""
     $psi.WindowStyle = [System.Diagnostics.ProcessWindowStyle]::Hidden
     $psi.UseShellExecute = $true
-    [System.Diagnostics.Process]::Start($psi) | Out-Null
+    if (-not $isAdmin) { $psi.Verb = "runas" }
+    try {
+        [System.Diagnostics.Process]::Start($psi) | Out-Null
+    } catch {
+        [System.Windows.Forms.MessageBox]::Show("Discord Tunneling needs Administrator rights to create its virtual network adapter (TUN), which is what lets it route Discord's voice/video/screen share (UDP) traffic, not just chat.`n`nPlease reopen and accept the UAC prompt.", "Administrator rights required", "OK", "Warning") | Out-Null
+    }
     exit
 }
-
-Add-Type -AssemblyName System.Windows.Forms
-Add-Type -AssemblyName System.Drawing
 
 $base = Split-Path -Parent $MyInvocation.MyCommand.Path
 if (-not $base) { $base = (Get-Location).Path }
@@ -85,7 +94,7 @@ function Get-Field($pattern, $content) {
 }
 
 function Test-TunnelInstalled {
-    return (Test-Path (Join-Path $base "sing-box.exe")) -and (Test-Path (Join-Path $base "config.json"))
+    return (Test-Path (Join-Path $base "sing-box.exe")) -and (Test-Path (Join-Path $base "config.json")) -and (Test-Path (Join-Path $base "wintun.dll"))
 }
 
 function Test-TunnelRunning {
@@ -174,7 +183,7 @@ $form.Controls.Add($infoBox)
 Set-RoundedRegion $infoBox 12
 
 $infoLabel = New-Object System.Windows.Forms.Label
-$infoLabel.Text = "You can close this window - the tunnel keeps running in the background." + "`n`n" + "This creates a separate `"Discord (Tunneling)`" shortcut that routes only Discord's traffic through your VPN. The rest of your PC keeps its normal connection."
+$infoLabel.Text = "You can close this window - the tunnel keeps running in the background." + "`n`n" + "Routes all of Discord's traffic (including voice/video/screen share) through your VPN via a virtual adapter, while the rest of your PC keeps its normal connection. Needs one Administrator (UAC) prompt."
 $infoLabel.Font = New-Object System.Drawing.Font("Segoe UI", 8.7)
 $infoLabel.ForeColor = $InfoBoxText
 $infoLabel.Location = New-Object System.Drawing.Point(14, 8)
@@ -320,6 +329,34 @@ function Ensure-SingBox {
     }
 }
 
+function Ensure-Wintun {
+    $wintunDll = Join-Path $base "wintun.dll"
+    if (Test-Path $wintunDll) {
+        Set-Progress "wintun.dll already present." $LogGreen
+        return $true
+    }
+    Set-Progress "Downloading wintun driver..." $LogGray
+    try {
+        $zipPath = Join-Path $base "wintun_temp.zip"
+        Invoke-WebRequest -Uri "https://www.wintun.net/builds/wintun-0.14.1.zip" -OutFile $zipPath
+        $extractPath = Join-Path $base "wintun_temp_extract"
+        Expand-Archive -Path $zipPath -DestinationPath $extractPath -Force
+
+        $dllFound = Get-ChildItem -Path $extractPath -Recurse -Filter "wintun.dll" | Where-Object { $_.FullName -match "\\amd64\\" } | Select-Object -First 1
+        if (-not $dllFound) { $dllFound = Get-ChildItem -Path $extractPath -Recurse -Filter "wintun.dll" | Select-Object -First 1 }
+        Copy-Item $dllFound.FullName -Destination $wintunDll -Force
+
+        Remove-Item $zipPath -Force
+        Remove-Item $extractPath -Recurse -Force
+        Set-Progress "wintun driver downloaded." $LogGreen
+        return $true
+    } catch {
+        Set-Progress "Failed to download wintun." $LogRed
+        [System.Windows.Forms.MessageBox]::Show("Could not auto-download the wintun driver (needed for the TUN adapter that carries Discord's voice/video traffic).`n`nDownload it manually from wintun.net, copy the amd64\wintun.dll into this folder, and click Install again.`n`nDetails: $($_.Exception.Message)", "Download failed", "OK", "Error") | Out-Null
+        return $false
+    }
+}
+
 function Build-ConfigFromConf($confPath) {
     Set-Progress "Reading your VPN config..." $LogGray
     $confContent = Get-Content -Path $confPath -Raw
@@ -340,7 +377,22 @@ function Build-ConfigFromConf($confPath) {
     $endpointHost = $endpointParts[0]
     $endpointPort = $endpointParts[1]
 
+    # Discord's own process names, matched at the network layer so voice,
+    # video and screen share (which are all UDP/WebRTC) get tunneled too -
+    # a plain SOCKS5 proxy only ever carries the TCP/HTTP(S) traffic.
+    $discordProcesses = @("Discord.exe", "Update.exe")
+
     $configObj = [ordered]@{
+        dns = [ordered]@{
+            servers = @(
+                [ordered]@{ type = "local"; tag = "dns-direct" }
+                [ordered]@{ type = "udp"; tag = "dns-vpn"; server = "1.1.1.1"; server_port = 53; detour = "vpn" }
+            )
+            rules = @(
+                [ordered]@{ process_name = $discordProcesses; action = "route"; server = "dns-vpn" }
+            )
+            final = "dns-direct"
+        }
         endpoints = @(
             [ordered]@{
                 type = "wireguard"
@@ -362,19 +414,24 @@ function Build-ConfigFromConf($confPath) {
         )
         inbounds = @(
             [ordered]@{
-                type = "socks"
-                tag = "socks-in"
-                listen = "127.0.0.1"
-                listen_port = 1080
+                type = "tun"
+                tag = "tun-in"
+                address = @("172.19.0.1/30", "fdfe:dcba:9876::1/126")
+                mtu = 1400
+                auto_route = $true
+                strict_route = $true
+                stack = "system"
             }
         )
         outbounds = @(
             [ordered]@{ type = "direct"; tag = "direct" }
         )
         route = [ordered]@{
+            auto_detect_interface = $true
             rules = @(
-                [ordered]@{ inbound = @("socks-in"); outbound = "vpn" }
+                [ordered]@{ process_name = $discordProcesses; action = "route"; outbound = "vpn" }
             )
+            final = "direct"
         }
     }
 
@@ -396,7 +453,10 @@ function New-DiscordShortcut {
     $shortcutPath = Join-Path $desktop "Discord (Tunneling).lnk"
     $shortcut = $WScriptShell.CreateShortcut($shortcutPath)
     $shortcut.TargetPath = $discordUpdate
-    $shortcut.Arguments = '--processStart Discord.exe --process-start-args="--proxy-server=socks5://127.0.0.1:1080"'
+    # No --proxy-server flag needed anymore: the tunnel now matches Discord.exe
+    # by process name at the network layer (see Build-ConfigFromConf), so any
+    # Discord instance is routed through the VPN while the tunnel is running.
+    $shortcut.Arguments = '--processStart Discord.exe'
     $shortcut.WorkingDirectory = Join-Path $env:LOCALAPPDATA "Discord"
     $customIcon = Join-Path $base "assets\app.ico"
     if (Test-Path $customIcon) { $shortcut.IconLocation = $customIcon } else { $shortcut.IconLocation = $discordUpdate }
@@ -405,24 +465,45 @@ function New-DiscordShortcut {
     return $shortcutPath
 }
 
-function Set-Autostart($enable) {
-    $WScriptShell = New-Object -ComObject WScript.Shell
+$autostartTaskName = "DiscordTunneling"
+
+function Remove-LegacyAutostart {
+    # Cleans up the old (pre-TUN) SOCKS5-based autostart mechanism, which
+    # launched sing-box non-elevated and would silently fail to create a
+    # TUN adapter if left in place alongside the new scheduled task.
     $startupFolder = [Environment]::GetFolderPath("Startup")
     $startupShortcut = Join-Path $startupFolder "sing-box-vpn.lnk"
+    if (Test-Path $startupShortcut) { Remove-Item $startupShortcut -Force }
+    $vbsPath = Join-Path $base "iniciar.vbs"
+    if (Test-Path $vbsPath) { Remove-Item $vbsPath -Force }
+}
+
+function Set-Autostart($enable) {
+    Remove-LegacyAutostart
+    Unregister-ScheduledTask -TaskName $autostartTaskName -Confirm:$false -ErrorAction SilentlyContinue
 
     if ($enable) {
-        $vbsPath = Join-Path $base "iniciar.vbs"
-        $vbsLine1 = 'Set WshShell = CreateObject("WScript.Shell")'
-        $vbsLine2 = 'WshShell.Run "cmd /c cd /d ""' + $base + '"" && sing-box.exe run -c config.json", 0'
-        Set-Content -Path $vbsPath -Value @($vbsLine1, $vbsLine2) -Encoding ASCII
-
-        $s2 = $WScriptShell.CreateShortcut($startupShortcut)
-        $s2.TargetPath = $vbsPath
-        $s2.WorkingDirectory = $base
-        $s2.Save()
-    } else {
-        if (Test-Path $startupShortcut) { Remove-Item $startupShortcut -Force }
+        # TUN needs Administrator rights, so autostart uses a scheduled task
+        # registered to run elevated at logon instead of a plain Startup
+        # shortcut (which Windows cannot silently elevate).
+        $action = New-ScheduledTaskAction -Execute (Join-Path $base "sing-box.exe") -Argument "run -c config.json" -WorkingDirectory $base
+        $trigger = New-ScheduledTaskTrigger -AtLogOn
+        $principal = New-ScheduledTaskPrincipal -UserId ([Security.Principal.WindowsIdentity]::GetCurrent().Name) -RunLevel Highest -LogonType Interactive
+        $settings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -StartWhenAvailable
+        Register-ScheduledTask -TaskName $autostartTaskName -Action $action -Trigger $trigger -Principal $principal -Settings $settings -Force | Out-Null
     }
+}
+
+function Restart-Tunnel {
+    # Always used after (re)writing config.json - a sing-box process already
+    # running keeps using whatever config it loaded at launch, so a stale
+    # process left over from a previous install/provider would silently keep
+    # the old TUN/routing setup instead of the one just generated.
+    if (Test-TunnelRunning) {
+        Get-Process -Name "sing-box" -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
+        Start-Sleep -Milliseconds 500
+    }
+    Start-Tunnel
 }
 
 function Start-Tunnel {
@@ -450,6 +531,7 @@ $installButton.Add_Click({
     $installButton.Enabled = $false
 
     if (-not (Ensure-SingBox)) { $installButton.Enabled = $true; return }
+    if (-not (Ensure-Wintun)) { $installButton.Enabled = $true; return }
 
     $dialog = New-Object System.Windows.Forms.OpenFileDialog
     $dialog.Title = "Select your VPN WireGuard .conf file"
@@ -466,7 +548,7 @@ $installButton.Add_Click({
 
     New-DiscordShortcut | Out-Null
     Set-Autostart $autostartCheck.Checked
-    Start-Tunnel
+    Restart-Tunnel
 
     $openButton.Enabled = $true
     $installButton.Text = "Reconfigure (select a different .conf)"
@@ -476,14 +558,16 @@ $installButton.Add_Click({
 $openButton.Add_Click({
     $discordUpdate = Join-Path $env:LOCALAPPDATA "Discord\Update.exe"
     if (Test-Path $discordUpdate) {
-        # Close any regular (non-tunneled) Discord instance first, so they don't run at the same time
+        # Close any already-running Discord first: its existing connections were
+        # opened before the tunnel's routes existed, so it needs a fresh start
+        # to pick up the new (tunneled) route.
         $existingDiscord = Get-Process -Name "Discord" -ErrorAction SilentlyContinue
         if ($existingDiscord) {
             $existingDiscord | Stop-Process -Force -ErrorAction SilentlyContinue
             Start-Sleep -Milliseconds 800
         }
 
-        Start-Process -FilePath $discordUpdate -ArgumentList '--processStart Discord.exe --process-start-args="--proxy-server=socks5://127.0.0.1:1080"'
+        Start-Process -FilePath $discordUpdate -ArgumentList '--processStart Discord.exe'
 
         [System.Windows.Forms.MessageBox]::Show(
             "Discord (Tunneling) is launching!`n`nYou don't need to keep this window open - the tunnel keeps running quietly in the background even after you close it.`n`nThanks for using Discord Tunneling!",
