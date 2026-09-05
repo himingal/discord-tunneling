@@ -282,7 +282,7 @@ function Show-PhoneHandoffDialog($url) {
         [uri]::EscapeDataString("Discord Tunneling")
     $dlg = New-Object System.Windows.Forms.Form
     $dlg.Text = "Send to your phone"
-    $dlg.ClientSize = New-Object System.Drawing.Size(360, 470)
+    $dlg.ClientSize = New-Object System.Drawing.Size(360, 478)
     $dlg.FormBorderStyle = "FixedDialog"
     $dlg.MaximizeBox = $false
     $dlg.MinimizeBox = $false
@@ -357,6 +357,30 @@ function Show-PhoneHandoffDialog($url) {
         [System.Windows.Forms.MessageBox]::Show(
             "Send $androidConfigName to your phone however you like - cable, Drive, a message to yourself.`n`nThen in sing-box: New profile, Type Local, Import from file, pick it.`n`nThis needs no network at all, so it works even when the QR and the address don't.",
             "Send the file instead", "OK", "Information") | Out-Null
+    })
+
+    # Swapping the .conf rewrites the file the handoff already serves, and the
+    # QR only ever points at that address - so it keeps working untouched.
+    $swapLink = New-Object System.Windows.Forms.LinkLabel
+    $swapLink.Text = "Use a different .conf for the phone"
+    $swapLink.Font = New-Object System.Drawing.Font("Segoe UI", 8.3)
+    $swapLink.LinkColor = $BrandPinkDk
+    $swapLink.AutoSize = $false
+    $swapLink.TextAlign = "MiddleCenter"
+    $swapLink.Size = New-Object System.Drawing.Size(300, 18)
+    $swapLink.Location = New-Object System.Drawing.Point(30, 448)
+    $dlg.Controls.Add($swapLink)
+    $swapLink.Add_Click({
+        $picker = New-Object System.Windows.Forms.OpenFileDialog
+        $picker.Title = "Select the .conf for your PHONE (not the PC's)"
+        $picker.Filter = "WireGuard config (*.conf)|*.conf|All files (*.*)|*.*"
+        $picker.InitialDirectory = Get-DownloadsFolder
+        if ($picker.ShowDialog() -ne "OK") { return }
+        if (New-AndroidConfigFromConf $picker.FileName) {
+            [System.Windows.Forms.MessageBox]::Show(
+                "Profile updated. Scan the same QR again - the address didn't change, only what it serves.`n`nIf you already imported the old one on your phone, delete that profile there first.",
+                "Config replaced", "OK", "Information") | Out-Null
+        }
     })
 
     $dlg.ShowDialog() | Out-Null
