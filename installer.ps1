@@ -676,14 +676,72 @@ function Remove-LegacyAutostart {
     # launched sing-box non-elevated and would silently fail to create a
     # TUN adapter if left in place alongside the new scheduled task.
     $startupFolder = [Environment]::GetFolderPath("Startup")
-    $startupShortcut = Join-Path $startupFolder "sing-box-vpn.lnk"
-    if (Test-Path $startupShortcut) { Remove-Item $startupShortcut -Force }
+    foreach ($stale in @("sing-box-vpn.lnk", "sing-box-proton.lnk")) {
+        $p = Join-Path $startupFolder $stale
+        if (Test-Path $p) { Remove-Item $p -Force -ErrorAction SilentlyContinue }
+    }
     $vbsPath = Join-Path $base "iniciar.vbs"
     if (Test-Path $vbsPath) { Remove-Item $vbsPath -Force }
 }
 
+function Set-DiscordStartupWaiter($enable) {
+    # A "Discord (Tunneling)" shortcut left in the Startup folder by v1.x still
+    # carried --proxy-server=socks5://127.0.0.1:1080. That proxy stopped
+    # existing in 2.0, and Chromium pointed at a dead proxy refuses every
+    # connection, so Discord hung on "Starting..." at every boot while the same
+    # shortcut on the desktop (already rewritten) worked fine.
+    #
+    # Replacing it with a waiter fixes more than the dead flag: Discord is held
+    # until the tunnel adapter is up, so its first connection already goes
+    # through the VPN. Connecting beforehand would show Discord the real
+    # location - the very restriction the tunnel exists to work around.
+    $startupFolder = [Environment]::GetFolderPath("Startup")
+    $startupShortcut = Join-Path $startupFolder "Discord (Tunneling).lnk"
+    $waiterPath = Join-Path $base "discord-waiter.ps1"
+
+    if (-not $enable) {
+        if (Test-Path $startupShortcut) { Remove-Item $startupShortcut -Force -ErrorAction SilentlyContinue }
+        if (Test-Path $waiterPath) { Remove-Item $waiterPath -Force -ErrorAction SilentlyContinue }
+        return
+    }
+
+    $waiter = @'
+$base = $PSScriptRoot
+if (-not $base) { $base = Split-Path -Parent $MyInvocation.MyCommand.Path }
+
+# Hold Discord until the tunnel adapter reports Up, so its first connection is
+# already tunneled. Give up after two minutes and start it anyway - a Discord
+# that opens untunneled beats one that never opens.
+$deadline = (Get-Date).AddSeconds(120)
+while ((Get-Date) -lt $deadline) {
+    $adapter = Get-NetAdapter -ErrorAction SilentlyContinue | Where-Object {
+        $_.Status -eq "Up" -and ($_.Name -like "tun*" -or $_.InterfaceDescription -like "*sing-tun*") }
+    if ($adapter) { Start-Sleep -Seconds 4; break }
+    Start-Sleep -Seconds 2
+}
+
+if (-not (Get-Process -Name "Discord" -ErrorAction SilentlyContinue)) {
+    $update = Join-Path $env:LOCALAPPDATA "Discord\Update.exe"
+    if (Test-Path $update) {
+        Start-Process -FilePath $update -ArgumentList "--processStart Discord.exe"
+    }
+}
+'@
+    [System.IO.File]::WriteAllText($waiterPath, $waiter, (New-Object System.Text.UTF8Encoding($false)))
+
+    $WScriptShell = New-Object -ComObject WScript.Shell
+    $s = $WScriptShell.CreateShortcut($startupShortcut)
+    $s.TargetPath = "powershell.exe"
+    $s.Arguments = "-WindowStyle Hidden -ExecutionPolicy Bypass -File `"$waiterPath`""
+    $s.WorkingDirectory = $base
+    $customIcon = Join-Path $base "assets\app.ico"
+    if (Test-Path $customIcon) { $s.IconLocation = $customIcon }
+    $s.Save()
+}
+
 function Set-Autostart($enable) {
     Remove-LegacyAutostart
+    Set-DiscordStartupWaiter $enable
     Unregister-ScheduledTask -TaskName $autostartTaskName -Confirm:$false -ErrorAction SilentlyContinue
 
     if ($enable) {
