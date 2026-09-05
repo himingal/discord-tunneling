@@ -447,6 +447,14 @@ function Build-ConfigFromConf($confPath) {
     }
 
     $configObj = [ordered]@{
+        # The tunnel runs hidden, so without this every failure is invisible -
+        # the app can only report "it didn't work". sing-box.log is where to
+        # look first when the tunnel starts but traffic doesn't flow.
+        log = [ordered]@{
+            level = "info"
+            output = "sing-box.log"
+            timestamp = $true
+        }
         dns = [ordered]@{
             servers = @(
                 # NOT "local": with auto_route on, a "local" server hands the
