@@ -99,6 +99,27 @@ function Test-TunnelInstalled {
     return (Test-Path (Join-Path $base "sing-box.exe")) -and (Test-Path (Join-Path $base "config.json")) -and (Test-Path (Join-Path $base "wintun.dll"))
 }
 
+function Get-PhysicalInterfaceAlias {
+    # The adapter carrying the default route, skipping sing-box's own TUN.
+    # That exclusion is the whole point: once auto_route is in place the TUN
+    # *is* the default route, so anything that just reads the routing table -
+    # sing-box's own route.auto_detect_interface included - picks the tunnel
+    # and binds the direct outbound to it, which sing-box then rejects as a
+    # "loopback connection to TUN range" and kills every UDP flow, DNS first.
+    try {
+        $routes = Get-NetRoute -DestinationPrefix "0.0.0.0/0" -ErrorAction Stop | Sort-Object -Property RouteMetric
+        foreach ($r in $routes) {
+            $adapter = Get-NetAdapter -InterfaceIndex $r.InterfaceIndex -ErrorAction SilentlyContinue
+            if ($adapter -and $adapter.Status -eq "Up" -and
+                $adapter.Name -notlike "tun*" -and
+                $adapter.InterfaceDescription -notlike "*sing-tun*") {
+                return $adapter.Name
+            }
+        }
+    } catch { }
+    return $null
+}
+
 function Test-TunnelRunning {
     return $null -ne (Get-Process -Name "sing-box" -ErrorAction SilentlyContinue)
 }
@@ -447,13 +468,20 @@ function Build-ConfigFromConf($confPath) {
     # connection on the whole PC loops into the TUN with nowhere to go - that
     # took down all networking, DNS included, during testing.
     #
-    # auto_detect_interface rather than a fixed bind_interface: the adapter is
-    # followed as it changes, so moving between Ethernet and Wi-Fi needs no
-    # reconfiguring. domain_resolver is what makes this combination legal -
-    # sing-box refuses a detour into an outbound carrying no explicit dial
-    # fields ("detour to an empty direct outbound makes no sense"), and a
-    # route-level auto_detect_interface doesn't count as one.
+    # bind_interface names the physical adapter explicitly. route's
+    # auto_detect_interface would be tidier, but it reads the routing table -
+    # where auto_route has already made the TUN the default - so it binds the
+    # direct outbound to the tunnel itself and every UDP flow dies as a
+    # "loopback connection to TUN range". The name written here is refreshed on
+    # each launch by tunnel-launcher.ps1, so it still follows the adapter in
+    # use without a reconfigure.
+    #
+    # domain_resolver is kept because sing-box refuses a detour into an
+    # outbound carrying no explicit dial fields of its own ("detour to an
+    # empty direct outbound makes no sense").
     $directOutbound = [ordered]@{ type = "direct"; tag = "direct"; domain_resolver = "dns-direct" }
+    $physicalInterface = Get-PhysicalInterfaceAlias
+    if ($physicalInterface) { $directOutbound["bind_interface"] = $physicalInterface }
     $wireguardEndpoint = [ordered]@{
         type = "wireguard"
         tag = "vpn"
@@ -478,7 +506,6 @@ function Build-ConfigFromConf($confPath) {
         )
     }
     $routeBlock = [ordered]@{
-        auto_detect_interface = $true
         default_domain_resolver = "dns-direct"
         rules = @(
             # auto_route points the TUN's own DNS at an address inside the TUN
@@ -581,6 +608,60 @@ function New-DiscordShortcut {
 
 $autostartTaskName = "DiscordTunneling"
 
+function Write-TunnelLauncher {
+    # sing-box is started through this rather than directly so the adapter
+    # named in bind_interface is refreshed first. Otherwise the adapter chosen
+    # when the .conf was imported would be baked in, and the tunnel would break
+    # the first time the machine moved from Ethernet to Wi-Fi.
+    $launcherPath = Join-Path $base "tunnel-launcher.ps1"
+    $launcher = @'
+$base = Split-Path -Parent $MyInvocation.MyCommand.Path
+Set-Location $base
+
+function Get-PhysicalInterfaceAlias {
+    # Skip sing-box's own TUN: with auto_route it owns the default route, and
+    # binding the direct outbound to it makes every UDP flow fail as a
+    # "loopback connection to TUN range".
+    try {
+        $routes = Get-NetRoute -DestinationPrefix "0.0.0.0/0" -ErrorAction Stop | Sort-Object -Property RouteMetric
+        foreach ($r in $routes) {
+            $adapter = Get-NetAdapter -InterfaceIndex $r.InterfaceIndex -ErrorAction SilentlyContinue
+            if ($adapter -and $adapter.Status -eq "Up" -and
+                $adapter.Name -notlike "tun*" -and
+                $adapter.InterfaceDescription -notlike "*sing-tun*") {
+                return $adapter.Name
+            }
+        }
+    } catch { }
+    return $null
+}
+
+$configPath = Join-Path $base "config.json"
+$iface = Get-PhysicalInterfaceAlias
+if ($iface -and (Test-Path $configPath)) {
+    try {
+        $cfg = Get-Content -Raw $configPath | ConvertFrom-Json
+        $direct = $cfg.outbounds | Where-Object { $_.tag -eq "direct" } | Select-Object -First 1
+        if ($direct -and $direct.bind_interface -ne $iface) {
+            $direct | Add-Member -NotePropertyName bind_interface -NotePropertyValue $iface -Force
+            $json = $cfg | ConvertTo-Json -Depth 10
+            [System.IO.File]::WriteAllText($configPath, $json, (New-Object System.Text.UTF8Encoding($false)))
+        }
+    } catch { }
+}
+
+# Discard a runaway log while nothing holds it open
+$logPath = Join-Path $base "sing-box.log"
+if ((Test-Path $logPath) -and ((Get-Item $logPath).Length -gt 20MB)) {
+    Remove-Item $logPath -Force -ErrorAction SilentlyContinue
+}
+
+& (Join-Path $base "sing-box.exe") run -c config.json
+'@
+    [System.IO.File]::WriteAllText($launcherPath, $launcher, (New-Object System.Text.UTF8Encoding($false)))
+    return $launcherPath
+}
+
 function Remove-LegacyAutostart {
     # Cleans up the old (pre-TUN) SOCKS5-based autostart mechanism, which
     # launched sing-box non-elevated and would silently fail to create a
@@ -600,7 +681,10 @@ function Set-Autostart($enable) {
         # TUN needs Administrator rights, so autostart uses a scheduled task
         # registered to run elevated at logon instead of a plain Startup
         # shortcut (which Windows cannot silently elevate).
-        $action = New-ScheduledTaskAction -Execute (Join-Path $base "sing-box.exe") -Argument "run -c config.json" -WorkingDirectory $base
+        $launcherPath = Write-TunnelLauncher
+        $action = New-ScheduledTaskAction -Execute "powershell.exe" `
+            -Argument "-WindowStyle Hidden -ExecutionPolicy Bypass -File `"$launcherPath`"" `
+            -WorkingDirectory $base
 
         # 20s delay: interface detection and the WireGuard handshake both need
         # a network that's actually up, which it often isn't at logon.
