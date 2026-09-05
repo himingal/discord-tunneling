@@ -640,6 +640,11 @@ function Get-PhysicalInterfaceAlias {
     return $null
 }
 
+# Never start a second instance. Two sing-box processes sharing one WireGuard
+# key make the VPN server bounce the session between them, and the tunnel
+# carries no data at all while that happens.
+if (Get-Process -Name "sing-box" -ErrorAction SilentlyContinue) { exit 0 }
+
 $configPath = Join-Path $base "config.json"
 $iface = Get-PhysicalInterfaceAlias
 if ($iface -and (Test-Path $configPath)) {
@@ -921,6 +926,15 @@ if (Test-TunnelInstalled) {
         Set-Status "Tunnel running" $LogGreen
     } else {
         Set-Status "Tunnel installed, not running" $LogYellow
+        # The .conf was already imported, so starting is all that's left.
+        # Making someone re-pick the same file to get the tunnel back reads as
+        # the config not having been saved at all.
+        $form.Add_Shown({
+            if ((Test-TunnelInstalled) -and -not (Test-TunnelRunning)) {
+                Set-Status "Starting tunnel..." $LogYellow
+                Start-Tunnel | Out-Null
+            }
+        })
     }
     $openButton.Enabled = $true
     $installButton.Text = "Reconfigure (select a different .conf)"
