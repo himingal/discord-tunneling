@@ -191,9 +191,9 @@ nothing to configure once it's imported.
 
 When you import your VPN config on the PC, the app also writes
 **`discord-tunneling-android.json`** next to it: a complete sing-box profile
-with Discord already set as the only app routed through the tunnel. The app can
-hand it straight to your phone over your own Wi-Fi, so there's no file to copy
-and nothing to configure after importing.
+with Discord already set as the only app routed through the tunnel. Scan a QR on the PC
+and the phone gets it over your own Wi-Fi — no file to copy, and nothing to
+configure after importing.
 
 > The profile contains your VPN private key, same as the desktop config. The
 > handoff below keeps it on your local network; if you move the file around by
@@ -214,17 +214,19 @@ Get **sing-box** from
 [Google Play](https://play.google.com/store/apps/details?id=io.nekohasekai.sfa)
 or [F-Droid](https://f-droid.org/en/packages/io.nekohasekai.sfa/).
 
-### Step 2 — Send the profile over from the PC
+### Step 2 — Scan the QR on the PC
 
 In the desktop app, click **"On Android too? Get the config for your phone"**.
-It shows a short address like `http://192.168.3.122:8899`.
+A QR code appears.
 
-On your phone — connected to the same Wi-Fi — open that address in any browser
-and tap **Import into sing-box**. sing-box opens with the profile already
-filled in; save it.
+Point your phone's camera at it — same Wi-Fi as the PC — and open the page it
+offers. Tap **Import into sing-box**: sing-box opens with the profile already
+filled in. Save it.
 
-The PC serves the profile only while that message is on screen, and only on
-your local network. Nothing is uploaded anywhere.
+The address is printed under the QR too, in case you'd rather type it.
+
+The PC serves the profile only while that window is open, and only on your
+local network. Nothing is uploaded anywhere.
 
 ### Step 3 — Turn it on
 
