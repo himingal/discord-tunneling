@@ -272,9 +272,13 @@ function Set-Progress($text, [System.Drawing.Color]$color = $LogGray) {
 }
 
 function Show-PhoneHandoffDialog($url) {
-    # The QR carries the page address rather than the sing-box:// deep link, so
-    # any phone camera can open it - including before sing-box is installed,
-    # since the page itself links to the store.
+    # The QR carries the profile URL itself, scanned from inside sing-box.
+    # Its scanner accepts a bare http(s) URL as a remote profile directly,
+    # which is a shorter and better-understood path than the
+    # sing-box://import-remote-profile scheme - that one goes through a
+    # browser, and Chrome's handling of custom schemes is inconsistent enough
+    # that tapping the link can fail outright.
+    $profileUrl = "$url/profile.json"
     $dlg = New-Object System.Windows.Forms.Form
     $dlg.Text = "Send to your phone"
     $dlg.ClientSize = New-Object System.Drawing.Size(360, 470)
@@ -286,15 +290,24 @@ function Show-PhoneHandoffDialog($url) {
     if ($appIcon) { $dlg.Icon = $appIcon }
 
     $title = New-Object System.Windows.Forms.Label
-    $title.Text = "Point your phone's camera here"
+    $title.Text = "Scan this from inside sing-box"
     $title.Font = New-Object System.Drawing.Font("Segoe UI", 12, [System.Drawing.FontStyle]::Bold)
     $title.ForeColor = $BrandPinkDk
     $title.TextAlign = "MiddleCenter"
-    $title.Size = New-Object System.Drawing.Size(340, 26)
-    $title.Location = New-Object System.Drawing.Point(10, 16)
+    $title.Size = New-Object System.Drawing.Size(340, 24)
+    $title.Location = New-Object System.Drawing.Point(10, 12)
     $dlg.Controls.Add($title)
 
-    $qr = New-QrBitmap $url 7 3
+    $subtitle = New-Object System.Windows.Forms.Label
+    $subtitle.Text = "sing-box app  ->  New profile  ->  scan icon"
+    $subtitle.Font = New-Object System.Drawing.Font("Segoe UI", 8.5)
+    $subtitle.ForeColor = [System.Drawing.Color]::FromArgb(120, 120, 130)
+    $subtitle.TextAlign = "MiddleCenter"
+    $subtitle.Size = New-Object System.Drawing.Size(340, 18)
+    $subtitle.Location = New-Object System.Drawing.Point(10, 34)
+    $dlg.Controls.Add($subtitle)
+
+    $qr = New-QrBitmap $profileUrl 7 3
     if ($qr) {
         $pic = New-Object System.Windows.Forms.PictureBox
         $pic.Image = $qr
@@ -305,24 +318,24 @@ function Show-PhoneHandoffDialog($url) {
     }
 
     $urlBox = New-Object System.Windows.Forms.TextBox
-    $urlBox.Text = $url
+    $urlBox.Text = $profileUrl
     $urlBox.ReadOnly = $true
     $urlBox.TextAlign = "Center"
-    $urlBox.Font = New-Object System.Drawing.Font("Segoe UI", 10, [System.Drawing.FontStyle]::Bold)
+    $urlBox.Font = New-Object System.Drawing.Font("Segoe UI", 9)
     $urlBox.BorderStyle = "FixedSingle"
-    $urlBox.Size = New-Object System.Drawing.Size(280, 26)
-    $urlBox.Location = New-Object System.Drawing.Point(40, 340)
+    $urlBox.Size = New-Object System.Drawing.Size(300, 24)
+    $urlBox.Location = New-Object System.Drawing.Point(30, 342)
     $dlg.Controls.Add($urlBox)
 
     $help = New-Object System.Windows.Forms.Label
-    $help.Text = "Or type that address in your phone's browser." + "`r`n`r`n" +
-                 "Tap Import into sing-box on the page that opens. Discord is already the only app routed through it - nothing to set up afterwards." + "`r`n`r`n" +
+    $help.Text = "Can't scan? In sing-box choose New profile, set Type to Remote, and paste that address as the URL." + "`r`n`r`n" +
+                 "Either way, Discord is already the only app routed through it - nothing to set up afterwards." + "`r`n`r`n" +
                  "Both devices must be on the same Wi-Fi. Nothing leaves your network, and this stops working when you close this window."
     $help.Font = New-Object System.Drawing.Font("Segoe UI", 8.5)
     $help.ForeColor = [System.Drawing.Color]::FromArgb(95, 95, 105)
     $help.TextAlign = "TopCenter"
-    $help.Size = New-Object System.Drawing.Size(320, 82)
-    $help.Location = New-Object System.Drawing.Point(20, 374)
+    $help.Size = New-Object System.Drawing.Size(320, 92)
+    $help.Location = New-Object System.Drawing.Point(20, 372)
     $dlg.Controls.Add($help)
 
     $dlg.ShowDialog() | Out-Null
@@ -1134,14 +1147,21 @@ a.btn{display:block;background:#f657a9;color:#fff;text-decoration:none;font-weig
 font-size:16px;padding:15px;border-radius:12px;margin-bottom:14px}
 ol{text-align:left;font-size:13px;color:#5a5a66;line-height:1.7;padding-left:20px;margin:0}
 .small{font-size:12px;color:#8a8a96;margin-top:18px}
+.url{font-family:ui-monospace,Consolas,monospace;font-size:13px;word-break:break-all;
+background:#f6f2f4;border:1px solid #ecdfe6;border-radius:10px;padding:11px;color:#3a3a44}
+button.copy{margin:10px 0 18px;background:#fff;border:1.5px solid #f657a9;color:#c6307e;
+font-weight:600;font-size:14px;padding:10px 18px;border-radius:10px}
 </style></head><body><div class="card">
 <h1>Discord Tunneling</h1>
 <p>Only Discord goes through your VPN. Everything else on this phone keeps its normal connection.</p>
 <a class="btn" href="$deepLink">Import into sing-box</a>
+<p class="small" style="margin:-6px 0 16px">If that button does nothing, use the address below instead &mdash; some browsers refuse to hand off custom links.</p>
+<div class="url" id="u">$profileUrl</div>
+<button class="copy" onclick="navigator.clipboard.writeText(document.getElementById('u').textContent);this.textContent='Copied'">Copy address</button>
 <ol>
 <li>Install <b>sing-box</b> from Google Play or F-Droid, if you haven't.</li>
-<li>Tap the button above &mdash; sing-box opens with the profile ready.</li>
-<li>Save it, then switch it on from the Dashboard.</li>
+<li>In sing-box: <b>New profile</b>, set <b>Type</b> to <b>Remote</b>, paste the address as the URL, and save.</li>
+<li>Switch it on from the Dashboard.</li>
 </ol>
 <p class="small">Nothing to configure afterwards: Discord is already the only app routed through it. Don't open sing-box's per-app proxy screen &mdash; it overrides this.</p>
 </div></body></html>

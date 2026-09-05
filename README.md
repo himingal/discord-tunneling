@@ -214,16 +214,20 @@ Get **sing-box** from
 [Google Play](https://play.google.com/store/apps/details?id=io.nekohasekai.sfa)
 or [F-Droid](https://f-droid.org/en/packages/io.nekohasekai.sfa/).
 
-### Step 2 — Scan the QR on the PC
+### Step 2 — Scan the QR from inside sing-box
 
 In the desktop app, click **"On Android too? Get the config for your phone"**.
 A QR code appears.
 
-Point your phone's camera at it — same Wi-Fi as the PC — and open the page it
-offers. Tap **Import into sing-box**: sing-box opens with the profile already
-filled in. Save it.
+On the phone — same Wi-Fi as the PC — open **sing-box**, go to **New profile**
+and tap the **scan** icon, then point it at the QR. The profile fills itself
+in; save it.
 
-The address is printed under the QR too, in case you'd rather type it.
+Scan it from inside sing-box, not with the system camera: the QR holds the
+profile's address, which sing-box imports directly.
+
+If you can't scan, the address is printed under the QR. In sing-box choose
+**New profile**, set **Type** to **Remote**, and paste it as the URL.
 
 The PC serves the profile only while that window is open, and only on your
 local network. Nothing is uploaded anywhere.
@@ -249,6 +253,10 @@ folder. Copy it to the phone by cable or cloud, then in sing-box choose
 - **Don't touch the per-app proxy screen in sing-box's settings.** The app's UI
   setting *overrides* what's in the config file, so leaving it alone is what
   keeps `include_package` in charge.
+- **The profile is imported as a Remote one**, so sing-box remembers the PC's
+  address. The configuration itself is already downloaded and keeps working
+  after the PC's handoff stops — but leave auto-update off, or the profile will
+  periodically try to reach a PC that isn't serving anything.
 - Only `com.discord` is routed. To add another build — a beta, a fork — add its
   package name to `include_package` in the JSON and re-import.
 - No root needed. Android's `VpnService` does per-app routing natively, which
