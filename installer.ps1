@@ -130,7 +130,7 @@ function Test-TunnelRunning {
 
 $form = New-Object System.Windows.Forms.Form
 $form.Text = "Discord Tunneling"
-$form.ClientSize = New-Object System.Drawing.Size(440, 462)
+$form.ClientSize = New-Object System.Drawing.Size(440, 486)
 $form.StartPosition = "CenterScreen"
 $form.FormBorderStyle = "FixedDialog"
 $form.MaximizeBox = $false
@@ -271,16 +271,42 @@ function Set-Progress($text, [System.Drawing.Color]$color = $LogGray) {
     [System.Windows.Forms.Application]::DoEvents()
 }
 
+# ---------- Android config link ----------
+$androidLink = New-Object System.Windows.Forms.LinkLabel
+$androidLink.Text = "On Android too? Get the config for your phone"
+$androidLink.Font = New-Object System.Drawing.Font("Segoe UI", 8.3)
+$androidLink.LinkColor = $BrandPinkDk
+$androidLink.AutoSize = $false
+$androidLink.TextAlign = "MiddleCenter"
+$androidLink.Size = New-Object System.Drawing.Size(400, 18)
+$androidLink.Location = New-Object System.Drawing.Point(20, 398)
+$form.Controls.Add($androidLink)
+$androidLink.Add_Click({
+    $androidPath = Join-Path $base $androidConfigName
+    if (Test-Path $androidPath) {
+        # Select it in Explorer so it can be dragged straight onto a phone
+        Start-Process "explorer.exe" -ArgumentList "/select,`"$androidPath`""
+        [System.Windows.Forms.MessageBox]::Show(
+            "Your phone's config is the file now selected in Explorer:`n`n$androidConfigName`n`nCopy it to your Android device, install sing-box from Google Play or F-Droid, then use Import from file in the app.`n`nDiscord is already the only app routed through it - there's nothing to set up in sing-box's settings.",
+            "Android config",
+            "OK",
+            "Information"
+        ) | Out-Null
+    } else {
+        [System.Windows.Forms.MessageBox]::Show("Import a VPN .conf file first - the Android config is generated from it.", "Nothing to export yet", "OK", "Information") | Out-Null
+    }
+})
+
 # ---------- Divider + credit row (avatar + made by mingal, bottom) ----------
 $divider = New-Object System.Windows.Forms.Panel
 $divider.Size = New-Object System.Drawing.Size(400, 1)
-$divider.Location = New-Object System.Drawing.Point(20, 398)
+$divider.Location = New-Object System.Drawing.Point(20, 422)
 $divider.BackColor = [System.Drawing.Color]::FromArgb(235, 235, 238)
 $form.Controls.Add($divider)
 
 $creditPill = New-Object System.Windows.Forms.Panel
 $creditPill.Size = New-Object System.Drawing.Size(168, 34)
-$creditPill.Location = New-Object System.Drawing.Point(136, 412)
+$creditPill.Location = New-Object System.Drawing.Point(136, 436)
 $creditPill.BackColor = [System.Drawing.Color]::FromArgb(250, 248, 250)
 $form.Controls.Add($creditPill)
 Set-RoundedRegion $creditPill 17
@@ -579,8 +605,89 @@ function Build-ConfigFromConf($confPath) {
     $configPath = Join-Path $base "config.json"
     $jsonText = $configObj | ConvertTo-Json -Depth 10
     [System.IO.File]::WriteAllText($configPath, $jsonText, (New-Object System.Text.UTF8Encoding($false)))
+
+    Write-AndroidConfig $endpointAddresses $allowedIps $privateKey $endpointHost $endpointPort $publicKey $dnsStrategy
+
     Set-Progress "Config file created." $LogGreen
     return $true
+}
+
+$androidConfigName = "discord-tunneling-android.json"
+# Discord's Play Store package. Anything else (a beta build, a fork) can be
+# added to this list and the file regenerated.
+$androidPackages = @("com.discord")
+
+function Write-AndroidConfig($endpointAddresses, $allowedIps, $privateKey, $endpointHost, $endpointPort, $publicKey, $dnsStrategy) {
+    # Android does per-app VPN properly - VpnService takes a package list - so
+    # the same .conf produces a phone profile with Discord already isolated,
+    # with nothing to tick in sing-box's UI after importing.
+    #
+    # None of the Windows workarounds carry over: include_package filters at
+    # the TUN itself, so everything that reaches sing-box is already Discord
+    # and the route can simply end at the tunnel. And VpnService protects
+    # sing-box's own sockets from the VPN it created, which is what
+    # bind_interface and the endpoint detour exist to do on Windows.
+    $tunAddresses = @("172.19.0.1/30")
+    if ($endpointAddresses.Count -gt 1) { $tunAddresses += "fdfe:dcba:9876::1/126" }
+
+    $androidConfig = [ordered]@{
+        log = [ordered]@{ level = "warn" }
+        dns = [ordered]@{
+            servers = @(
+                [ordered]@{ type = "udp"; tag = "dns-vpn"; server = "1.1.1.1"; server_port = 53; detour = "vpn" }
+            )
+            strategy = $dnsStrategy
+            final = "dns-vpn"
+        }
+        endpoints = @(
+            [ordered]@{
+                type = "wireguard"
+                tag = "vpn"
+                system = $false
+                address = $endpointAddresses
+                private_key = $privateKey
+                mtu = 1408
+                peers = @(
+                    [ordered]@{
+                        address = $endpointHost
+                        port = [int]$endpointPort
+                        public_key = $publicKey
+                        allowed_ips = $allowedIps
+                        persistent_keepalive_interval = 25
+                    }
+                )
+            }
+        )
+        inbounds = @(
+            [ordered]@{
+                type = "tun"
+                tag = "tun-in"
+                address = $tunAddresses
+                mtu = 1400
+                auto_route = $true
+                stack = "system"
+                # Android-only, and requires auto_route: only these packages
+                # are routed into the tunnel. Everything else on the phone
+                # never touches it.
+                include_package = $androidPackages
+            }
+        )
+        outbounds = @(
+            [ordered]@{ type = "direct"; tag = "direct" }
+        )
+        route = [ordered]@{
+            default_domain_resolver = "dns-vpn"
+            rules = @(
+                [ordered]@{ action = "sniff" }
+                [ordered]@{ protocol = "dns"; action = "hijack-dns" }
+            )
+            final = "vpn"
+        }
+    }
+
+    $androidPath = Join-Path $base $androidConfigName
+    $androidJson = $androidConfig | ConvertTo-Json -Depth 10
+    [System.IO.File]::WriteAllText($androidPath, $androidJson, (New-Object System.Text.UTF8Encoding($false)))
 }
 
 function New-DiscordShortcut {

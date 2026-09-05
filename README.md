@@ -179,26 +179,69 @@ the same tunnel.
 - **Any Discord window is tunneled while the tunnel runs.** Matching is by
   process name, not by a launch flag, so there's no separate "untunneled"
   Discord on the same PC.
-- **Mobile isn't covered.** See below.
+- **iOS isn't possible.** Android is — see below.
 - If you need guaranteed 100% tunneling for non-Discord traffic too, or would
   rather not grant admin rights, run Discord in a lightweight VM with the VPN
   applied to its whole network instead.
 
-## What about mobile?
+## Android
 
-Not supported here, and the answer differs sharply by platform:
+Your phone gets the same split tunnel, from the same `.conf` — and there's
+nothing to configure once it's imported.
 
-- **Android** — very doable, and you don't need this project. Android's
-  `VpnService` supports per-app routing natively. Either use
-  [sing-box for Android](https://github.com/SagerNet/sing-box/releases)
-  (import the same `.conf`, then enable **Per-app proxy** and select Discord),
-  or just use your VPN provider's own app — Proton VPN's Android client has
-  split tunneling built in.
-- **iOS** — not really possible. Per-app VPN exists only for devices managed
-  through an MDM; consumer apps can't route a single app. The closest
-  approximation is routing by destination instead of by app, sending only
-  Discord's IP ranges through the tunnel, which sing-box for iOS can express —
-  but it's a rougher match and breaks whenever Discord changes infrastructure.
+When you import your VPN config on the PC, the app also writes
+**`discord-tunneling-android.json`** next to it. That file is a complete
+sing-box profile with Discord already set as the only app routed through the
+tunnel, so on the phone you just import and switch it on.
+
+> This file contains your VPN private key, same as the desktop config. Send it
+> to yourself privately — don't post it anywhere.
+
+### Step 1 — Get the file
+
+In the app, click **"On Android too? Get the config for your phone"**. Explorer
+opens with `discord-tunneling-android.json` selected.
+
+Copy it to your phone however you like — USB cable, Google Drive, sending it to
+yourself on any messenger.
+
+### Step 2 — Install sing-box on the phone
+
+Get **sing-box** from
+[Google Play](https://play.google.com/store/apps/details?id=io.nekohasekai.sfa)
+or [F-Droid](https://f-droid.org/en/packages/io.nekohasekai.sfa/).
+
+### Step 3 — Import the profile
+
+In sing-box: **Profiles → + (new) → Type: Local → Import from file**, pick the
+`discord-tunneling-android.json` you copied over, and save it.
+
+### Step 4 — Turn it on
+
+Go back to **Dashboard**, select the profile, and tap the toggle. Android asks
+once to allow the VPN connection — accept it.
+
+That's it. Discord goes through the VPN; every other app on the phone keeps its
+normal connection.
+
+### Notes
+
+- **Don't touch the per-app proxy screen in sing-box's settings.** The app's UI
+  setting *overrides* what's in the config file, so leaving it alone is what
+  keeps `include_package` in charge.
+- Only `com.discord` is routed. To add another build — a beta, a fork — add its
+  package name to `include_package` in the JSON and re-import.
+- No root needed. Android's `VpnService` does per-app routing natively, which
+  is why the phone side is far simpler than the Windows side.
+
+## What about iOS?
+
+Not possible in any honest form. Per-app VPN on iOS exists only for devices
+managed through an MDM; a consumer app can't route a single app's traffic. The
+closest approximation is routing by destination rather than by app — sending
+only Discord's IP ranges through the tunnel, which sing-box for iOS can
+express — but it's a rough match and breaks whenever Discord changes
+infrastructure.
 
 ## Author
 
