@@ -645,6 +645,27 @@ function Reset-OversizedLog {
     }
 }
 
+function Wait-ForTunAdapter($timeoutSeconds = 40) {
+    # Opening the TUN adapter can take a long while on Windows - sing-box logs
+    # "open interface take too much time to finish!" when it does - and routes
+    # are in flux until it settles. Probing connectivity during that window
+    # reads as a dead tunnel and rolls back one that was merely starting slowly.
+    $deadline = (Get-Date).AddSeconds($timeoutSeconds)
+    while ((Get-Date) -lt $deadline) {
+        if (-not (Test-TunnelRunning)) { return $false }
+        $adapter = Get-NetAdapter -ErrorAction SilentlyContinue |
+            Where-Object { $_.InterfaceDescription -like "*Wintun*" -and $_.Status -eq "Up" }
+        if ($adapter) {
+            # Up, but the routing table needs a beat to catch up
+            Start-Sleep -Seconds 3
+            return $true
+        }
+        Start-Sleep -Milliseconds 750
+        [System.Windows.Forms.Application]::DoEvents()
+    }
+    return (Test-TunnelRunning)
+}
+
 function Test-ConnectivityOk {
     # Verifies the machine can still reach the internet while the tunnel is up.
     # Both halves matter and fail differently:
@@ -702,11 +723,20 @@ function Start-Tunnel {
     # just fail - it can take the whole PC offline. Verify the machine is still
     # reachable and roll the tunnel back automatically if it isn't, instead of
     # leaving someone stranded without a connection to go look up a fix with.
+    #
+    # Patience matters more than speed here: a false positive tears down a
+    # working tunnel, which is exactly what an impatient check did on a machine
+    # where the adapter took its time to open.
+    Set-Progress "Waiting for the tunnel adapter..." $LogGray
+    Wait-ForTunAdapter | Out-Null
+
     Set-Progress "Verifying connectivity..." $LogGray
     $ok = $false
-    foreach ($attempt in 1..3) {
+    foreach ($attempt in 1..6) {
         if (Test-ConnectivityOk) { $ok = $true; break }
-        Start-Sleep -Seconds 2
+        if (-not (Test-TunnelRunning)) { break }
+        Start-Sleep -Seconds 3
+        [System.Windows.Forms.Application]::DoEvents()
     }
 
     if (-not $ok) {
