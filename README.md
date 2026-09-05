@@ -223,14 +223,20 @@ On the phone — same Wi-Fi as the PC — open **sing-box**, go to **New profile
 and tap the **scan** icon, then point it at the QR. The profile fills itself
 in; save it.
 
-Scan it from inside sing-box, not with the system camera: the QR holds the
-profile's address, which sing-box imports directly.
+Scan it from inside sing-box, not with the system camera. The QR holds a
+`sing-box://` import link, and scanning is the one route that hands it over
+intact — released builds reject a plain URL in the scanner, and a browser tap
+on the same link is unreliable.
 
-If you can't scan, the address is printed under the QR. In sing-box choose
-**New profile**, set **Type** to **Remote**, and paste it as the URL.
+While that window is open, the PC serves the profile on your local network and
+opens a firewall rule for it, both scoped to the local subnet and both closed
+again when you shut the window. Nothing is uploaded anywhere.
 
-The PC serves the profile only while that window is open, and only on your
-local network. Nothing is uploaded anywhere.
+**If neither the QR nor the address works**, click **"Neither works? Save the
+file to send yourself"** in that same window. That route uses no network at
+all: send `discord-tunneling-android.json` to your phone by cable, cloud or
+message, then in sing-box choose **New profile → Type: Local → Import from
+file**. It always works.
 
 ### Step 3 — Turn it on
 
@@ -242,11 +248,10 @@ normal connection.
 
 ### If the phone can't reach the PC
 
-Some networks isolate wireless clients from each other, and the PC's firewall
-may block the port. In that case use the file directly: it's
-`discord-tunneling-android.json`, next to the desktop config in the install
-folder. Copy it to the phone by cable or cloud, then in sing-box choose
-**Profiles → + → Type: Local → Import from file**.
+The app opens the firewall for its own port while the handoff window is up, but
+some networks isolate wireless clients from each other, and a phone on mobile
+data or a guest SSID isn't on your LAN at all. Use the file route in that case —
+the button in the same window — since it needs no network.
 
 ### Notes
 

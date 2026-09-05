@@ -272,13 +272,14 @@ function Set-Progress($text, [System.Drawing.Color]$color = $LogGray) {
 }
 
 function Show-PhoneHandoffDialog($url) {
-    # The QR carries the profile URL itself, scanned from inside sing-box.
-    # Its scanner accepts a bare http(s) URL as a remote profile directly,
-    # which is a shorter and better-understood path than the
-    # sing-box://import-remote-profile scheme - that one goes through a
-    # browser, and Chrome's handling of custom schemes is inconsistent enough
-    # that tapping the link can fail outright.
+    # The QR carries the sing-box:// import link. Released builds reject a bare
+    # http URL in the scanner, and the same link failed when a browser had to
+    # hand it over - scanning skips the browser entirely, which is the one
+    # combination that leaves the scheme intact.
     $profileUrl = "$url/profile.json"
+    $deepLink = "sing-box://import-remote-profile?url=" +
+        [uri]::EscapeDataString($profileUrl) + "#" +
+        [uri]::EscapeDataString("Discord Tunneling")
     $dlg = New-Object System.Windows.Forms.Form
     $dlg.Text = "Send to your phone"
     $dlg.ClientSize = New-Object System.Drawing.Size(360, 470)
@@ -307,7 +308,7 @@ function Show-PhoneHandoffDialog($url) {
     $subtitle.Location = New-Object System.Drawing.Point(10, 34)
     $dlg.Controls.Add($subtitle)
 
-    $qr = New-QrBitmap $profileUrl 7 3
+    $qr = New-QrBitmap $deepLink 6 3
     if ($qr) {
         $pic = New-Object System.Windows.Forms.PictureBox
         $pic.Image = $qr
@@ -328,15 +329,35 @@ function Show-PhoneHandoffDialog($url) {
     $dlg.Controls.Add($urlBox)
 
     $help = New-Object System.Windows.Forms.Label
-    $help.Text = "Can't scan? In sing-box choose New profile, set Type to Remote, and paste that address as the URL." + "`r`n`r`n" +
-                 "Either way, Discord is already the only app routed through it - nothing to set up afterwards." + "`r`n`r`n" +
-                 "Both devices must be on the same Wi-Fi. Nothing leaves your network, and this stops working when you close this window."
+    $help.Text = "Can't scan? In sing-box: New profile, Type Remote, paste that address as the URL." + "`r`n" +
+                 "Both devices must be on the same Wi-Fi."
     $help.Font = New-Object System.Drawing.Font("Segoe UI", 8.5)
     $help.ForeColor = [System.Drawing.Color]::FromArgb(95, 95, 105)
     $help.TextAlign = "TopCenter"
-    $help.Size = New-Object System.Drawing.Size(320, 92)
+    $help.Size = New-Object System.Drawing.Size(320, 34)
     $help.Location = New-Object System.Drawing.Point(20, 372)
     $dlg.Controls.Add($help)
+
+    # The offline route: no network, no firewall, no URL scheme. It always
+    # works, which is why it's a button rather than a footnote.
+    $fileBtn = New-Object System.Windows.Forms.Button
+    $fileBtn.Text = "Neither works? Save the file to send yourself"
+    $fileBtn.Font = New-Object System.Drawing.Font("Segoe UI", 9)
+    $fileBtn.ForeColor = $BrandPinkDk
+    $fileBtn.BackColor = [System.Drawing.Color]::FromArgb(253, 244, 249)
+    $fileBtn.FlatStyle = "Flat"
+    $fileBtn.FlatAppearance.BorderSize = 0
+    $fileBtn.Size = New-Object System.Drawing.Size(300, 32)
+    $fileBtn.Location = New-Object System.Drawing.Point(30, 410)
+    $fileBtn.Cursor = [System.Windows.Forms.Cursors]::Hand
+    $dlg.Controls.Add($fileBtn)
+    $fileBtn.Add_Click({
+        $androidPath = Join-Path $base $androidConfigName
+        Start-Process "explorer.exe" -ArgumentList "/select,`"$androidPath`""
+        [System.Windows.Forms.MessageBox]::Show(
+            "Send $androidConfigName to your phone however you like - cable, Drive, a message to yourself.`n`nThen in sing-box: New profile, Type Local, Import from file, pick it.`n`nThis needs no network at all, so it works even when the QR and the address don't.",
+            "Send the file instead", "OK", "Information") | Out-Null
+    })
 
     $dlg.ShowDialog() | Out-Null
     if ($qr) { $qr.Dispose() }
@@ -1088,7 +1109,24 @@ function Get-LanIPAddress {
     return $null
 }
 
+$androidFirewallRule = "Discord Tunneling - phone handoff"
+
+function Set-HandoffFirewallRule($enable) {
+    # Windows blocks inbound connections by default, so the phone's request
+    # just times out without this. Scoped to the local subnet and removed as
+    # soon as the handoff window closes - the hole is only open while someone
+    # is looking at the QR.
+    Remove-NetFirewallRule -DisplayName $androidFirewallRule -ErrorAction SilentlyContinue
+    if (-not $enable) { return }
+    try {
+        New-NetFirewallRule -DisplayName $androidFirewallRule -Direction Inbound `
+            -Protocol TCP -LocalPort $androidHandoffPort -Action Allow `
+            -RemoteAddress LocalSubnet -Profile Any -ErrorAction Stop | Out-Null
+    } catch { }
+}
+
 function Stop-AndroidHandoff {
+    Set-HandoffFirewallRule $false
     if (-not $script:androidHandoff) { return }
     try { $script:androidHandoff.State.Stop = $true } catch { }
     try { $script:androidHandoff.PowerShell.Stop() } catch { }
@@ -1198,6 +1236,8 @@ font-weight:600;font-size:14px;padding:10px 18px;border-radius:10px}
         try { $listener.Close() } catch { }
     })
     [void]$ps.BeginInvoke()
+
+    Set-HandoffFirewallRule $true
 
     $script:androidHandoff = @{
         Runspace = $runspace; PowerShell = $ps; State = $state
