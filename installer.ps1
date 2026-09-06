@@ -6,19 +6,28 @@
 #  leaving the rest of the system on the normal connection.
 # ============================================================
 
-if ($env:DT_HIDDEN -ne "1") {
+Add-Type -AssemblyName System.Windows.Forms
+Add-Type -AssemblyName System.Drawing
+
+# TUN mode needs to create a virtual network adapter and set OS routes,
+# which requires an elevated (Administrator) process on Windows.
+$isAdmin = ([Security.Principal.WindowsPrincipal] [Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
+
+if ($env:DT_HIDDEN -ne "1" -or -not $isAdmin) {
     $env:DT_HIDDEN = "1"
     $psi = New-Object System.Diagnostics.ProcessStartInfo
     $psi.FileName = "powershell.exe"
     $psi.Arguments = "-WindowStyle Hidden -ExecutionPolicy Bypass -File `"$PSCommandPath`""
     $psi.WindowStyle = [System.Diagnostics.ProcessWindowStyle]::Hidden
     $psi.UseShellExecute = $true
-    [System.Diagnostics.Process]::Start($psi) | Out-Null
+    if (-not $isAdmin) { $psi.Verb = "runas" }
+    try {
+        [System.Diagnostics.Process]::Start($psi) | Out-Null
+    } catch {
+        [System.Windows.Forms.MessageBox]::Show("Discord Tunneling needs Administrator rights to create its virtual network adapter (TUN), which is what lets it route Discord's voice/video/screen share (UDP) traffic, not just chat.`n`nPlease reopen and accept the UAC prompt.", "Administrator rights required", "OK", "Warning") | Out-Null
+    }
     exit
 }
-
-Add-Type -AssemblyName System.Windows.Forms
-Add-Type -AssemblyName System.Drawing
 
 $base = Split-Path -Parent $MyInvocation.MyCommand.Path
 if (-not $base) { $base = (Get-Location).Path }
@@ -34,6 +43,8 @@ $LogGray     = [System.Drawing.Color]::FromArgb(120, 120, 125)
 $InfoBoxBg   = [System.Drawing.Color]::FromArgb(252, 235, 244)
 $InfoBoxText = [System.Drawing.Color]::FromArgb(150, 45, 100)
 
+# Gear for this window and the app's own shortcut; the plain logo (app.ico)
+# stays on the "Discord (Tunneling)" launcher so the two are told apart.
 $iconPath = Join-Path $base "assets\app_settings.ico"
 $logoPngPath = Join-Path $base "assets\app_logo.png"
 $avatarPath = Join-Path $base "assets\avatar.png"
@@ -85,7 +96,28 @@ function Get-Field($pattern, $content) {
 }
 
 function Test-TunnelInstalled {
-    return (Test-Path (Join-Path $base "sing-box.exe")) -and (Test-Path (Join-Path $base "config.json"))
+    return (Test-Path (Join-Path $base "sing-box.exe")) -and (Test-Path (Join-Path $base "config.json")) -and (Test-Path (Join-Path $base "wintun.dll"))
+}
+
+function Get-PhysicalInterfaceAlias {
+    # The adapter carrying the default route, skipping sing-box's own TUN.
+    # That exclusion is the whole point: once auto_route is in place the TUN
+    # *is* the default route, so anything that just reads the routing table -
+    # sing-box's own route.auto_detect_interface included - picks the tunnel
+    # and binds the direct outbound to it, which sing-box then rejects as a
+    # "loopback connection to TUN range" and kills every UDP flow, DNS first.
+    try {
+        $routes = Get-NetRoute -DestinationPrefix "0.0.0.0/0" -ErrorAction Stop | Sort-Object -Property RouteMetric
+        foreach ($r in $routes) {
+            $adapter = Get-NetAdapter -InterfaceIndex $r.InterfaceIndex -ErrorAction SilentlyContinue
+            if ($adapter -and $adapter.Status -eq "Up" -and
+                $adapter.Name -notlike "tun*" -and
+                $adapter.InterfaceDescription -notlike "*sing-tun*") {
+                return $adapter.Name
+            }
+        }
+    } catch { }
+    return $null
 }
 
 function Test-TunnelRunning {
@@ -174,7 +206,7 @@ $form.Controls.Add($infoBox)
 Set-RoundedRegion $infoBox 12
 
 $infoLabel = New-Object System.Windows.Forms.Label
-$infoLabel.Text = "You can close this window - the tunnel keeps running in the background." + "`n`n" + "This creates a separate `"Discord (Tunneling)`" shortcut that routes only Discord's traffic through your VPN. The rest of your PC keeps its normal connection."
+$infoLabel.Text = "You can close this window - the tunnel keeps running in the background." + "`n`n" + "Routes all of Discord's traffic (including voice/video/screen share) through your VPN via a virtual adapter, while the rest of your PC keeps its normal connection. Needs one Administrator (UAC) prompt."
 $infoLabel.Font = New-Object System.Drawing.Font("Segoe UI", 8.7)
 $infoLabel.ForeColor = $InfoBoxText
 $infoLabel.Location = New-Object System.Drawing.Point(14, 8)
@@ -289,11 +321,34 @@ function Set-Status($text, [System.Drawing.Color]$color) {
     $statusDot.ForeColor = $color
 }
 
+# Config uses schema that landed in 1.12 (rule actions, endpoints,
+# default_domain_resolver). An older binary left over from a previous install
+# loads it wrong or not at all, so a stale sing-box.exe gets replaced.
+$singboxMinimumVersion = [version]"1.12.0"
+
+function Get-SingBoxVersion($exePath) {
+    try {
+        $output = & $exePath version 2>&1 | Select-Object -First 1
+        $m = [regex]::Match([string]$output, '(\d+)\.(\d+)\.(\d+)')
+        if ($m.Success) { return [version]$m.Value }
+    } catch { }
+    return $null
+}
+
 function Ensure-SingBox {
     $singboxExe = Join-Path $base "sing-box.exe"
     if (Test-Path $singboxExe) {
-        Set-Progress "sing-box already present." $LogGreen
-        return $true
+        $installed = Get-SingBoxVersion $singboxExe
+        if ($installed -and $installed -ge $singboxMinimumVersion) {
+            Set-Progress "sing-box already present." $LogGreen
+            return $true
+        }
+        Set-Progress "sing-box is outdated - updating..." $LogYellow
+        Remove-Item $singboxExe -Force -ErrorAction SilentlyContinue
+        if (Test-Path $singboxExe) {
+            [System.Windows.Forms.MessageBox]::Show("An old sing-box.exe is in use and can't be replaced. Stop the tunnel (end sing-box.exe in Task Manager) and click Install again.", "Update blocked", "OK", "Warning") | Out-Null
+            return $false
+        }
     }
     Set-Progress "Downloading sing-box..." $LogGray
     try {
@@ -320,6 +375,34 @@ function Ensure-SingBox {
     }
 }
 
+function Ensure-Wintun {
+    $wintunDll = Join-Path $base "wintun.dll"
+    if (Test-Path $wintunDll) {
+        Set-Progress "wintun.dll already present." $LogGreen
+        return $true
+    }
+    Set-Progress "Downloading wintun driver..." $LogGray
+    try {
+        $zipPath = Join-Path $base "wintun_temp.zip"
+        Invoke-WebRequest -Uri "https://www.wintun.net/builds/wintun-0.14.1.zip" -OutFile $zipPath
+        $extractPath = Join-Path $base "wintun_temp_extract"
+        Expand-Archive -Path $zipPath -DestinationPath $extractPath -Force
+
+        $dllFound = Get-ChildItem -Path $extractPath -Recurse -Filter "wintun.dll" | Where-Object { $_.FullName -match "\\amd64\\" } | Select-Object -First 1
+        if (-not $dllFound) { $dllFound = Get-ChildItem -Path $extractPath -Recurse -Filter "wintun.dll" | Select-Object -First 1 }
+        Copy-Item $dllFound.FullName -Destination $wintunDll -Force
+
+        Remove-Item $zipPath -Force
+        Remove-Item $extractPath -Recurse -Force
+        Set-Progress "wintun driver downloaded." $LogGreen
+        return $true
+    } catch {
+        Set-Progress "Failed to download wintun." $LogRed
+        [System.Windows.Forms.MessageBox]::Show("Could not auto-download the wintun driver (needed for the TUN adapter that carries Discord's voice/video traffic).`n`nDownload it manually from wintun.net, copy the amd64\wintun.dll into this folder, and click Install again.`n`nDetails: $($_.Exception.Message)", "Download failed", "OK", "Error") | Out-Null
+        return $false
+    }
+}
+
 function Build-ConfigFromConf($confPath) {
     Set-Progress "Reading your VPN config..." $LogGray
     $confContent = Get-Content -Path $confPath -Raw
@@ -335,52 +418,168 @@ function Build-ConfigFromConf($confPath) {
         return $false
     }
 
-    $addressIPv4 = ($addressRaw -split ",")[0].Trim()
+    # Support exactly the address families the VPN actually handed us. Claiming
+    # more than that is what made Discord hang: the peer's allowed_ips used to
+    # advertise ::/0 unconditionally, so Discord's IPv6 connections were routed
+    # into a tunnel with no IPv6 address to send them from, and every one of
+    # them died with "missing IPv6 local address" while Discord kept retrying.
+    $addressParts = ($addressRaw -split ",") | ForEach-Object { $_.Trim() } | Where-Object { $_ }
+    $addressIPv4 = $addressParts | Where-Object { $_ -notmatch ':' } | Select-Object -First 1
+    $addressIPv6 = $addressParts | Where-Object { $_ -match ':' } | Select-Object -First 1
+
+    $endpointAddresses = @()
+    $allowedIps = @()
+    $tunAddresses = @("172.19.0.1/30")
+    $tunRouteAddresses = @("0.0.0.0/0")
+    if ($addressIPv4) {
+        $endpointAddresses += $addressIPv4
+        $allowedIps += "0.0.0.0/0"
+    }
+    if ($addressIPv6) {
+        $endpointAddresses += $addressIPv6
+        $allowedIps += "::/0"
+        $tunAddresses += "fdfe:dcba:9876::1/126"
+        $tunRouteAddresses += "::/0"
+    }
+    # Without a v6 address the TUN must not capture v6 at all - traffic it
+    # swallows but can't forward is worse than traffic it never touches.
+    $dnsStrategy = if ($addressIPv6) { "prefer_ipv4" } else { "ipv4_only" }
+
     $endpointParts = $endpoint -split ":"
     $endpointHost = $endpointParts[0]
     $endpointPort = $endpointParts[1]
 
-    $configObj = [ordered]@{
-        endpoints = @(
+    # If the VPN server is a literal IP, exclude it from the TUN's captured
+    # routes too, as a second line of defense alongside the interface
+    # detection below.
+    $routeExcludeAddresses = @()
+    if ($endpointHost -match '^\d{1,3}(\.\d{1,3}){3}$') {
+        $routeExcludeAddresses += "$endpointHost/32"
+    }
+
+    # Discord's own process names, matched at the network layer so voice,
+    # video and screen share (which are all UDP/WebRTC) get tunneled too -
+    # a plain SOCKS5 proxy only ever carries the TCP/HTTP(S) traffic.
+    $discordProcesses = @("Discord.exe", "Update.exe")
+
+    # auto_route on the TUN makes it the OS's default route for everything, so
+    # the "direct" outbound (which carries all non-Discord traffic) must
+    # explicitly escape back out through the real adapter, or every non-Discord
+    # connection on the whole PC loops into the TUN with nowhere to go - that
+    # took down all networking, DNS included, during testing.
+    #
+    # bind_interface names the physical adapter explicitly. route's
+    # auto_detect_interface would be tidier, but it reads the routing table -
+    # where auto_route has already made the TUN the default - so it binds the
+    # direct outbound to the tunnel itself and every UDP flow dies as a
+    # "loopback connection to TUN range". The name written here is refreshed on
+    # each launch by tunnel-launcher.ps1, so it still follows the adapter in
+    # use without a reconfigure.
+    #
+    # domain_resolver is kept because sing-box refuses a detour into an
+    # outbound carrying no explicit dial fields of its own ("detour to an
+    # empty direct outbound makes no sense").
+    $directOutbound = [ordered]@{ type = "direct"; tag = "direct"; domain_resolver = "dns-direct" }
+    $physicalInterface = Get-PhysicalInterfaceAlias
+    if ($physicalInterface) { $directOutbound["bind_interface"] = $physicalInterface }
+    $wireguardEndpoint = [ordered]@{
+        type = "wireguard"
+        tag = "vpn"
+        system = $false
+        address = $endpointAddresses
+        private_key = $privateKey
+        mtu = 1408
+        # Detours through "direct" instead of dialing for itself: a WireGuard
+        # endpoint bound to an interface fails on Windows whenever that adapter
+        # has IPv6 disabled, and the failed udp6 bind blocks the handshake
+        # outright (SagerNet/sing-box#2900). Going through "direct" keeps the
+        # endpoint away from that code path entirely.
+        detour = "direct"
+        peers = @(
             [ordered]@{
-                type = "wireguard"
-                tag = "vpn"
-                system = $false
-                address = @($addressIPv4)
-                private_key = $privateKey
-                mtu = 1408
-                peers = @(
-                    [ordered]@{
-                        address = $endpointHost
-                        port = [int]$endpointPort
-                        public_key = $publicKey
-                        allowed_ips = @("0.0.0.0/0", "::/0")
-                        persistent_keepalive_interval = 25
-                    }
-                )
+                address = $endpointHost
+                port = [int]$endpointPort
+                public_key = $publicKey
+                allowed_ips = $allowedIps
+                persistent_keepalive_interval = 25
             }
         )
+    }
+    $routeBlock = [ordered]@{
+        default_domain_resolver = "dns-direct"
+        rules = @(
+            # auto_route points the TUN's own DNS at an address inside the TUN
+            # subnet, so without hijacking, every lookup the machine makes is
+            # treated as ordinary traffic aimed at that address and rejected
+            # ("loopback connection to TUN range"). Windows then falls back to
+            # the physical adapter's resolver, which works but is slow, floods
+            # the log, and skips the dns block entirely - meaning Discord's
+            # lookups never take the dns-vpn path they're routed to below.
+            [ordered]@{ action = "sniff" }
+            [ordered]@{ protocol = "dns"; action = "hijack-dns" }
+            [ordered]@{ process_name = $discordProcesses; action = "route"; outbound = "vpn" }
+        )
+        final = "direct"
+    }
+
+    $configObj = [ordered]@{
+        # The tunnel runs hidden, so without this every failure is invisible -
+        # the app can only report "it didn't work". sing-box.log is where to
+        # look first when the tunnel starts but traffic doesn't flow.
+        # "warn", never "info": at info level sing-box logs a line per
+        # connection, and the TUN sees every connection the machine makes.
+        # That produced a 3 GB log file in a few hours of ordinary use.
+        log = [ordered]@{
+            level = "warn"
+            output = "sing-box.log"
+            timestamp = $true
+        }
+        dns = [ordered]@{
+            servers = @(
+                # NOT "local": with auto_route on, a "local" server hands the
+                # query to the OS resolver, whose reply packet gets captured
+                # by the TUN again and re-resolved forever - a known sing-box
+                # DNS loop (SagerNet/sing-box#3637). An explicit resolver with
+                # its own detour skips the OS resolver entirely.
+                [ordered]@{ type = "udp"; tag = "dns-direct"; server = "1.1.1.1"; server_port = 53; detour = "direct" }
+                [ordered]@{ type = "udp"; tag = "dns-vpn"; server = "1.1.1.1"; server_port = 53; detour = "vpn" }
+            )
+            rules = @(
+                [ordered]@{ process_name = $discordProcesses; action = "route"; server = "dns-vpn" }
+            )
+            # ipv4_only on an IPv4-only tunnel: handing back AAAA records the
+            # tunnel can't reach just makes apps hang on dead connections.
+            strategy = $dnsStrategy
+            final = "dns-direct"
+        }
+        endpoints = @($wireguardEndpoint)
         inbounds = @(
             [ordered]@{
-                type = "socks"
-                tag = "socks-in"
-                listen = "127.0.0.1"
-                listen_port = 1080
+                type = "tun"
+                tag = "tun-in"
+                address = $tunAddresses
+                mtu = 1400
+                auto_route = $true
+                route_address = $tunRouteAddresses
+                # Deliberately false: strict_route exists to force *everything*
+                # through the tunnel and block anything that escapes it, which
+                # is the opposite of a split tunnel - here the traffic that
+                # bypasses the TUN is the whole point. On Windows it also
+                # interferes with multihomed DNS resolution and is documented
+                # to break some applications.
+                strict_route = $false
+                stack = "system"
+                route_exclude_address = $routeExcludeAddresses
             }
         )
-        outbounds = @(
-            [ordered]@{ type = "direct"; tag = "direct" }
-        )
-        route = [ordered]@{
-            rules = @(
-                [ordered]@{ inbound = @("socks-in"); outbound = "vpn" }
-            )
-        }
+        outbounds = @($directOutbound)
+        route = $routeBlock
     }
 
     $configPath = Join-Path $base "config.json"
     $jsonText = $configObj | ConvertTo-Json -Depth 10
     [System.IO.File]::WriteAllText($configPath, $jsonText, (New-Object System.Text.UTF8Encoding($false)))
+
     Set-Progress "Config file created." $LogGreen
     return $true
 }
@@ -396,7 +595,10 @@ function New-DiscordShortcut {
     $shortcutPath = Join-Path $desktop "Discord (Tunneling).lnk"
     $shortcut = $WScriptShell.CreateShortcut($shortcutPath)
     $shortcut.TargetPath = $discordUpdate
-    $shortcut.Arguments = '--processStart Discord.exe --process-start-args="--proxy-server=socks5://127.0.0.1:1080"'
+    # No --proxy-server flag needed anymore: the tunnel now matches Discord.exe
+    # by process name at the network layer (see Build-ConfigFromConf), so any
+    # Discord instance is routed through the VPN while the tunnel is running.
+    $shortcut.Arguments = '--processStart Discord.exe'
     $shortcut.WorkingDirectory = Join-Path $env:LOCALAPPDATA "Discord"
     $customIcon = Join-Path $base "assets\app.ico"
     if (Test-Path $customIcon) { $shortcut.IconLocation = $customIcon } else { $shortcut.IconLocation = $discordUpdate }
@@ -405,41 +607,394 @@ function New-DiscordShortcut {
     return $shortcutPath
 }
 
-function Set-Autostart($enable) {
-    $WScriptShell = New-Object -ComObject WScript.Shell
+$autostartTaskName = "DiscordTunneling"
+
+function Write-TunnelLauncher {
+    # sing-box is started through this rather than directly so the adapter
+    # named in bind_interface is refreshed first. Otherwise the adapter chosen
+    # when the .conf was imported would be baked in, and the tunnel would break
+    # the first time the machine moved from Ethernet to Wi-Fi.
+    $launcherPath = Join-Path $base "tunnel-launcher.ps1"
+    $launcher = @'
+# $PSScriptRoot first: $MyInvocation.MyCommand.Path comes back empty in some
+# unattended hosts, and this runs at logon where a null path fails silently.
+$base = $PSScriptRoot
+if (-not $base) { $base = Split-Path -Parent $MyInvocation.MyCommand.Path }
+if (-not $base) { exit 1 }
+Set-Location $base
+
+function Get-PhysicalInterfaceAlias {
+    # Skip sing-box's own TUN: with auto_route it owns the default route, and
+    # binding the direct outbound to it makes every UDP flow fail as a
+    # "loopback connection to TUN range".
+    try {
+        $routes = Get-NetRoute -DestinationPrefix "0.0.0.0/0" -ErrorAction Stop | Sort-Object -Property RouteMetric
+        foreach ($r in $routes) {
+            $adapter = Get-NetAdapter -InterfaceIndex $r.InterfaceIndex -ErrorAction SilentlyContinue
+            if ($adapter -and $adapter.Status -eq "Up" -and
+                $adapter.Name -notlike "tun*" -and
+                $adapter.InterfaceDescription -notlike "*sing-tun*") {
+                return $adapter.Name
+            }
+        }
+    } catch { }
+    return $null
+}
+
+function Test-NetworkReady {
+    # A default route on a physical adapter is necessary but not sufficient:
+    # at logon Windows publishes the route before the link has finished
+    # negotiating, so also require that a packet actually gets out.
+    if (-not (Get-PhysicalInterfaceAlias)) { return $false }
+    try {
+        $client = New-Object System.Net.Sockets.TcpClient
+        $async = $client.BeginConnect("1.1.1.1", 443, $null, $null)
+        $ok = $async.AsyncWaitHandle.WaitOne(3000, $false) -and $client.Connected
+        $client.Close()
+        return $ok
+    } catch {
+        return $false
+    }
+}
+
+function Get-LogTextSince($path, $offset) {
+    # sing-box holds the log open, so it has to be read with FileShare
+    # ReadWrite. Reading only what was appended after the start marker keeps
+    # this from tripping over failures logged by an earlier run.
+    if (-not (Test-Path $path)) { return "" }
+    try {
+        $stream = [System.IO.File]::Open($path, 'Open', 'Read', 'ReadWrite')
+        if ($stream.Length -le $offset) { $stream.Close(); return "" }
+        $stream.Seek($offset, 'Begin') | Out-Null
+        $buffer = New-Object byte[] ($stream.Length - $offset)
+        $stream.Read($buffer, 0, $buffer.Length) | Out-Null
+        $stream.Close()
+        return [System.Text.Encoding]::UTF8.GetString($buffer)
+    } catch {
+        return ""
+    }
+}
+
+# Never start a second instance. Two sing-box processes sharing one WireGuard
+# key make the VPN server bounce the session between them, and the tunnel
+# carries no data at all while that happens.
+if (Get-Process -Name "sing-box" -ErrorAction SilentlyContinue) { exit 0 }
+
+# Wait for the network before starting sing-box. This is the whole reason this
+# launcher runs at logon rather than sing-box directly: sing-box dials the
+# WireGuard endpoint once, at startup, and never retries that dial. Started on
+# a timer against a machine whose adapter wasn't up yet, it logs
+#   network: missing default interface
+#   endpoint/wireguard[vpn]: connect to server: ... no such network interface
+# and then runs all day with a dead VPN - TUN up, routes correct, every
+# Discord connection dropped into a black hole while everything upstream
+# reports a healthy tunnel.
+$networkDeadline = (Get-Date).AddSeconds(180)
+while (-not (Test-NetworkReady) -and (Get-Date) -lt $networkDeadline) {
+    Start-Sleep -Seconds 3
+}
+
+$configPath = Join-Path $base "config.json"
+$iface = Get-PhysicalInterfaceAlias
+if ($iface -and (Test-Path $configPath)) {
+    try {
+        $cfg = Get-Content -Raw $configPath | ConvertFrom-Json
+        $direct = $cfg.outbounds | Where-Object { $_.tag -eq "direct" } | Select-Object -First 1
+        if ($direct -and $direct.bind_interface -ne $iface) {
+            $direct | Add-Member -NotePropertyName bind_interface -NotePropertyValue $iface -Force
+            $json = $cfg | ConvertTo-Json -Depth 10
+            [System.IO.File]::WriteAllText($configPath, $json, (New-Object System.Text.UTF8Encoding($false)))
+        }
+    } catch { }
+}
+
+# Discard a runaway log while nothing holds it open
+$logPath = Join-Path $base "sing-box.log"
+if ((Test-Path $logPath) -and ((Get-Item $logPath).Length -gt 20MB)) {
+    Remove-Item $logPath -Force -ErrorAction SilentlyContinue
+}
+
+# Supervised start. Waiting for the network above prevents the common case,
+# but a link that flaps during logon can still hand sing-box a dead endpoint,
+# and a tunnel that carries nothing is worse than no tunnel at all: it looks
+# healthy from every angle except Discord's. So the dial is verified from the
+# log and a bad start is retried instead of being left to sit there.
+$singboxExe = Join-Path $base "sing-box.exe"
+$deadEndpoint = 'endpoint/wireguard\[vpn\]: connect to server|network: missing default interface'
+
+foreach ($attempt in 1..4) {
+    $offset = 0
+    if (Test-Path $logPath) { $offset = (Get-Item $logPath).Length }
+
+    $proc = Start-Process -FilePath $singboxExe -ArgumentList "run -c config.json" `
+        -WorkingDirectory $base -WindowStyle Hidden -PassThru
+    Start-Sleep -Seconds 20
+
+    if ($proc.HasExited) {
+        Start-Sleep -Seconds 10
+        continue
+    }
+
+    if ((Get-LogTextSince $logPath $offset) -match $deadEndpoint) {
+        Stop-Process -Id $proc.Id -Force -ErrorAction SilentlyContinue
+        Start-Sleep -Seconds 15
+        continue
+    }
+
+    # Healthy - hand the rest of the session over and keep the scheduled task
+    # alive for as long as the tunnel is up.
+    $proc.WaitForExit()
+    break
+}
+'@
+    [System.IO.File]::WriteAllText($launcherPath, $launcher, (New-Object System.Text.UTF8Encoding($false)))
+    return $launcherPath
+}
+
+function Remove-LegacyAutostart {
+    # Cleans up the old (pre-TUN) SOCKS5-based autostart mechanism, which
+    # launched sing-box non-elevated and would silently fail to create a
+    # TUN adapter if left in place alongside the new scheduled task.
     $startupFolder = [Environment]::GetFolderPath("Startup")
-    $startupShortcut = Join-Path $startupFolder "sing-box-vpn.lnk"
+    foreach ($stale in @("sing-box-vpn.lnk", "sing-box-proton.lnk")) {
+        $p = Join-Path $startupFolder $stale
+        if (Test-Path $p) { Remove-Item $p -Force -ErrorAction SilentlyContinue }
+    }
+    $vbsPath = Join-Path $base "iniciar.vbs"
+    if (Test-Path $vbsPath) { Remove-Item $vbsPath -Force }
+}
+
+function Set-DiscordStartupWaiter($enable) {
+    # A "Discord (Tunneling)" shortcut left in the Startup folder by v1.x still
+    # carried --proxy-server=socks5://127.0.0.1:1080. That proxy stopped
+    # existing in 2.0, and Chromium pointed at a dead proxy refuses every
+    # connection, so Discord hung on "Starting..." at every boot while the same
+    # shortcut on the desktop (already rewritten) worked fine.
+    #
+    # Replacing it with a waiter fixes more than the dead flag: Discord is held
+    # until the tunnel adapter is up, so its first connection already goes
+    # through the VPN. Connecting beforehand would show Discord the real
+    # location - the very restriction the tunnel exists to work around.
+    $startupFolder = [Environment]::GetFolderPath("Startup")
+    $startupShortcut = Join-Path $startupFolder "Discord (Tunneling).lnk"
+    $waiterPath = Join-Path $base "discord-waiter.ps1"
+
+    if (-not $enable) {
+        if (Test-Path $startupShortcut) { Remove-Item $startupShortcut -Force -ErrorAction SilentlyContinue }
+        if (Test-Path $waiterPath) { Remove-Item $waiterPath -Force -ErrorAction SilentlyContinue }
+        return
+    }
+
+    $waiter = @'
+$base = $PSScriptRoot
+if (-not $base) { $base = Split-Path -Parent $MyInvocation.MyCommand.Path }
+
+# Hold Discord until the tunnel adapter reports Up, so its first connection is
+# already tunneled. Give up after two minutes and start it anyway - a Discord
+# that opens untunneled beats one that never opens.
+$deadline = (Get-Date).AddSeconds(120)
+while ((Get-Date) -lt $deadline) {
+    $adapter = Get-NetAdapter -ErrorAction SilentlyContinue | Where-Object {
+        $_.Status -eq "Up" -and ($_.Name -like "tun*" -or $_.InterfaceDescription -like "*sing-tun*") }
+    if ($adapter) { Start-Sleep -Seconds 4; break }
+    Start-Sleep -Seconds 2
+}
+
+if (-not (Get-Process -Name "Discord" -ErrorAction SilentlyContinue)) {
+    $update = Join-Path $env:LOCALAPPDATA "Discord\Update.exe"
+    if (Test-Path $update) {
+        Start-Process -FilePath $update -ArgumentList "--processStart Discord.exe"
+    }
+}
+'@
+    [System.IO.File]::WriteAllText($waiterPath, $waiter, (New-Object System.Text.UTF8Encoding($false)))
+
+    $WScriptShell = New-Object -ComObject WScript.Shell
+    $s = $WScriptShell.CreateShortcut($startupShortcut)
+    $s.TargetPath = "powershell.exe"
+    $s.Arguments = "-WindowStyle Hidden -ExecutionPolicy Bypass -File `"$waiterPath`""
+    $s.WorkingDirectory = $base
+    $customIcon = Join-Path $base "assets\app.ico"
+    if (Test-Path $customIcon) { $s.IconLocation = $customIcon }
+    $s.Save()
+}
+
+function Set-Autostart($enable) {
+    Remove-LegacyAutostart
+    Set-DiscordStartupWaiter $enable
+    Unregister-ScheduledTask -TaskName $autostartTaskName -Confirm:$false -ErrorAction SilentlyContinue
 
     if ($enable) {
-        $vbsPath = Join-Path $base "iniciar.vbs"
-        $vbsLine1 = 'Set WshShell = CreateObject("WScript.Shell")'
-        $vbsLine2 = 'WshShell.Run "cmd /c cd /d ""' + $base + '"" && sing-box.exe run -c config.json", 0'
-        Set-Content -Path $vbsPath -Value @($vbsLine1, $vbsLine2) -Encoding ASCII
+        # TUN needs Administrator rights, so autostart uses a scheduled task
+        # registered to run elevated at logon instead of a plain Startup
+        # shortcut (which Windows cannot silently elevate).
+        $launcherPath = Write-TunnelLauncher
+        $action = New-ScheduledTaskAction -Execute "powershell.exe" `
+            -Argument "-WindowStyle Hidden -ExecutionPolicy Bypass -File `"$launcherPath`"" `
+            -WorkingDirectory $base
 
-        $s2 = $WScriptShell.CreateShortcut($startupShortcut)
-        $s2.TargetPath = $vbsPath
-        $s2.WorkingDirectory = $base
-        $s2.Save()
-    } else {
-        if (Test-Path $startupShortcut) { Remove-Item $startupShortcut -Force }
+        # 20s delay: interface detection and the WireGuard handshake both need
+        # a network that's actually up, which it often isn't at logon.
+        $trigger = New-ScheduledTaskTrigger -AtLogOn
+        $trigger.Delay = "PT20S"
+
+        # ExecutionTimeLimit must be explicitly unlimited - the default kills
+        # the task after 3 days, which would silently drop the tunnel on any
+        # machine that stays up that long.
+        $settings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries `
+            -StartWhenAvailable -ExecutionTimeLimit ([TimeSpan]::Zero) `
+            -RestartCount 3 -RestartInterval (New-TimeSpan -Minutes 1)
+
+        # S4U rather than Interactive: an interactive task runs sing-box in the
+        # user's session, which pops a console window on every logon. It looks
+        # broken, and closing that window kills the tunnel. S4U runs it in the
+        # background with no window and still elevates via RunLevel Highest.
+        $userId = [Security.Principal.WindowsIdentity]::GetCurrent().Name
+        $registered = $false
+        try {
+            $principal = New-ScheduledTaskPrincipal -UserId $userId -RunLevel Highest -LogonType S4U
+            Register-ScheduledTask -TaskName $autostartTaskName -Action $action -Trigger $trigger -Principal $principal -Settings $settings -Force -ErrorAction Stop | Out-Null
+            $registered = $true
+        } catch {
+            $registered = $false
+        }
+        if (-not $registered) {
+            # S4U needs the "Log on as a batch job" right, which not every
+            # account has. A visible console beats no autostart at all.
+            $principal = New-ScheduledTaskPrincipal -UserId $userId -RunLevel Highest -LogonType Interactive
+            Register-ScheduledTask -TaskName $autostartTaskName -Action $action -Trigger $trigger -Principal $principal -Settings $settings -Force | Out-Null
+        }
     }
+}
+
+function Stop-Tunnel {
+    Get-Process -Name "sing-box" -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
+    Start-Sleep -Milliseconds 500
+}
+
+function Reset-OversizedLog {
+    # sing-box appends forever and has no rotation of its own. At warn level the
+    # log stays tiny, but an older install logging at info level filled 3 GB in
+    # an afternoon - so a runaway log gets dropped while the tunnel is stopped
+    # (the only moment the file isn't locked). Small logs are kept: they're the
+    # evidence for whatever went wrong last run.
+    $logPath = Join-Path $base "sing-box.log"
+    if (-not (Test-Path $logPath)) { return }
+    if ((Get-Item $logPath).Length -gt 20MB) {
+        Remove-Item $logPath -Force -ErrorAction SilentlyContinue
+    }
+}
+
+function Wait-ForTunAdapter($timeoutSeconds = 40) {
+    # Opening the TUN adapter can take a long while on Windows - sing-box logs
+    # "open interface take too much time to finish!" when it does - and routes
+    # are in flux until it settles. Probing connectivity during that window
+    # reads as a dead tunnel and rolls back one that was merely starting slowly.
+    $deadline = (Get-Date).AddSeconds($timeoutSeconds)
+    while ((Get-Date) -lt $deadline) {
+        if (-not (Test-TunnelRunning)) { return $false }
+        # sing-box names the adapter "tun0" and describes it as "sing-tun
+        # Tunnel" - not "Wintun", which is only the driver underneath it.
+        $adapter = Get-NetAdapter -ErrorAction SilentlyContinue |
+            Where-Object { $_.Status -eq "Up" -and
+                ($_.InterfaceDescription -like "*sing-tun*" -or
+                 $_.InterfaceDescription -like "*Wintun*" -or
+                 $_.Name -like "tun*") }
+        if ($adapter) {
+            # Up, but the routing table needs a beat to catch up
+            Start-Sleep -Seconds 3
+            return $true
+        }
+        Start-Sleep -Milliseconds 750
+        [System.Windows.Forms.Application]::DoEvents()
+    }
+    return (Test-TunnelRunning)
+}
+
+function Test-ConnectivityOk {
+    # Verifies the machine can still reach the internet while the tunnel is up.
+    # Both halves matter and fail differently:
+    #  - the raw TCP connect proves non-Discord packets still escape the TUN
+    #    and reach the physical adapter (a broken "direct" outbound hangs here)
+    #  - the DNS lookup proves name resolution isn't looping back into the TUN
+    #    (the classic auto_route + "local" resolver deadlock)
+    $tcpOk = $false
+    try {
+        $client = New-Object System.Net.Sockets.TcpClient
+        $async = $client.BeginConnect("1.1.1.1", 443, $null, $null)
+        $tcpOk = $async.AsyncWaitHandle.WaitOne(4000, $false) -and $client.Connected
+        $client.Close()
+    } catch {
+        $tcpOk = $false
+    }
+    if (-not $tcpOk) { return $false }
+
+    $dnsOk = $false
+    try {
+        [System.Net.Dns]::GetHostEntry("cloudflare.com") | Out-Null
+        $dnsOk = $true
+    } catch {
+        $dnsOk = $false
+    }
+    return $dnsOk
+}
+
+function Restart-Tunnel {
+    # Always used after (re)writing config.json - a sing-box process already
+    # running keeps using whatever config it loaded at launch, so a stale
+    # process left over from a previous install/provider would silently keep
+    # the old TUN/routing setup instead of the one just generated.
+    Stop-Tunnel
+    Reset-OversizedLog
+    return (Start-Tunnel)
 }
 
 function Start-Tunnel {
     if (Test-TunnelRunning) {
         Set-Status "Tunnel running" $LogGreen
-        return
+        return $true
     }
     $singboxExe = Join-Path $base "sing-box.exe"
     Start-Process -FilePath $singboxExe -ArgumentList "run -c config.json" -WorkingDirectory $base -WindowStyle Hidden
-    Start-Sleep -Seconds 1
-    if (Test-TunnelRunning) {
-        Set-Progress "Tunnel started." $LogGreen
-        Set-Status "Tunnel running" $LogGreen
-    } else {
+    Start-Sleep -Seconds 2
+
+    if (-not (Test-TunnelRunning)) {
         Set-Progress "Tunnel failed to start." $LogRed
         Set-Status "Tunnel failed to start" $LogRed
+        return $false
     }
+
+    # The TUN takes over the machine's default route, so a bad config doesn't
+    # just fail - it can take the whole PC offline. Verify the machine is still
+    # reachable and roll the tunnel back automatically if it isn't, instead of
+    # leaving someone stranded without a connection to go look up a fix with.
+    #
+    # Patience matters more than speed here: a false positive tears down a
+    # working tunnel, which is exactly what an impatient check did on a machine
+    # where the adapter took its time to open.
+    Set-Progress "Waiting for the tunnel adapter..." $LogGray
+    Wait-ForTunAdapter | Out-Null
+
+    Set-Progress "Verifying connectivity..." $LogGray
+    $ok = $false
+    foreach ($attempt in 1..6) {
+        if (Test-ConnectivityOk) { $ok = $true; break }
+        if (-not (Test-TunnelRunning)) { break }
+        Start-Sleep -Seconds 3
+        [System.Windows.Forms.Application]::DoEvents()
+    }
+
+    if (-not $ok) {
+        Stop-Tunnel
+        Set-Progress "Tunnel rolled back." $LogRed
+        Set-Status "Tunnel broke connectivity - rolled back" $LogRed
+        [System.Windows.Forms.MessageBox]::Show("The tunnel started but the PC lost internet access, so it was shut down automatically and your connection has been restored.`n`nNothing is left running and autostart was not enabled, so a reboot won't bring this back.`n`nThis usually means sing-box couldn't route non-Discord traffic back out through your normal adapter. Please report this along with your Windows version and network setup.", "Tunnel rolled back", "OK", "Warning") | Out-Null
+        return $false
+    }
+
+    Set-Progress "Tunnel started." $LogGreen
+    Set-Status "Tunnel running" $LogGreen
+    return $true
 }
 
 # ============================================================
@@ -450,6 +1005,7 @@ $installButton.Add_Click({
     $installButton.Enabled = $false
 
     if (-not (Ensure-SingBox)) { $installButton.Enabled = $true; return }
+    if (-not (Ensure-Wintun)) { $installButton.Enabled = $true; return }
 
     $dialog = New-Object System.Windows.Forms.OpenFileDialog
     $dialog.Title = "Select your VPN WireGuard .conf file"
@@ -465,10 +1021,14 @@ $installButton.Add_Click({
     if (-not (Build-ConfigFromConf $dialog.FileName)) { $installButton.Enabled = $true; return }
 
     New-DiscordShortcut | Out-Null
-    Set-Autostart $autostartCheck.Checked
-    Start-Tunnel
 
-    $openButton.Enabled = $true
+    # Autostart is only registered once the tunnel has proven it keeps the
+    # machine online - otherwise a bad config would come back at every logon,
+    # with no working connection to fix it from.
+    $tunnelOk = Restart-Tunnel
+    Set-Autostart ($autostartCheck.Checked -and $tunnelOk)
+
+    $openButton.Enabled = $tunnelOk
     $installButton.Text = "Reconfigure (select a different .conf)"
     $installButton.Enabled = $true
 })
@@ -476,14 +1036,16 @@ $installButton.Add_Click({
 $openButton.Add_Click({
     $discordUpdate = Join-Path $env:LOCALAPPDATA "Discord\Update.exe"
     if (Test-Path $discordUpdate) {
-        # Close any regular (non-tunneled) Discord instance first, so they don't run at the same time
+        # Close any already-running Discord first: its existing connections were
+        # opened before the tunnel's routes existed, so it needs a fresh start
+        # to pick up the new (tunneled) route.
         $existingDiscord = Get-Process -Name "Discord" -ErrorAction SilentlyContinue
         if ($existingDiscord) {
             $existingDiscord | Stop-Process -Force -ErrorAction SilentlyContinue
             Start-Sleep -Milliseconds 800
         }
 
-        Start-Process -FilePath $discordUpdate -ArgumentList '--processStart Discord.exe --process-start-args="--proxy-server=socks5://127.0.0.1:1080"'
+        Start-Process -FilePath $discordUpdate -ArgumentList '--processStart Discord.exe'
 
         [System.Windows.Forms.MessageBox]::Show(
             "Discord (Tunneling) is launching!`n`nYou don't need to keep this window open - the tunnel keeps running quietly in the background even after you close it.`n`nThanks for using Discord Tunneling!",
@@ -502,6 +1064,15 @@ if (Test-TunnelInstalled) {
         Set-Status "Tunnel running" $LogGreen
     } else {
         Set-Status "Tunnel installed, not running" $LogYellow
+        # The .conf was already imported, so starting is all that's left.
+        # Making someone re-pick the same file to get the tunnel back reads as
+        # the config not having been saved at all.
+        $form.Add_Shown({
+            if ((Test-TunnelInstalled) -and -not (Test-TunnelRunning)) {
+                Set-Status "Starting tunnel..." $LogYellow
+                Start-Tunnel | Out-Null
+            }
+        })
     }
     $openButton.Enabled = $true
     $installButton.Text = "Reconfigure (select a different .conf)"
