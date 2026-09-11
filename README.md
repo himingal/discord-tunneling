@@ -1,7 +1,10 @@
 <img width="1200" height="630" alt="discord-tunneling-readme-banner" src="https://github.com/user-attachments/assets/7c14a907-2248-4476-bf39-d6f3b93d6d24" />
 
-
 # Discord Single-Tunneling
+
+![Platform](https://img.shields.io/badge/platform-Windows-0078D6?logo=windows&logoColor=white)
+![Language](https://img.shields.io/badge/language-PowerShell-5391FE?logo=powershell&logoColor=white)
+![License](https://img.shields.io/badge/license-MIT-3DA639)
 
 Route only Discord's traffic through a WireGuard VPN, while the rest of your
 system keeps using your normal internet connection. Built to work around
@@ -9,9 +12,47 @@ Discord's Go Live / camera restriction in regions where it's currently
 disabled, without paying for a VPN provider's per-app split tunneling feature
 and without slowing down the rest of your PC.
 
-Voice, video and screen share included — not just chat.
+**Voice, video and screen share included — not just chat.**
 
 **Windows desktop only.**
+
+## Why
+
+A VPN client routes everything — every browser tab, every download, every
+other game — through a server that's further away than your ISP. Turn it on
+to unblock Discord's camera and the rest of the PC pays for it in latency.
+Turn it off and Discord goes back to being restricted.
+
+This tool exists so that trade-off doesn't have to be made. It watches for
+one thing — Discord's own processes — and only those get the VPN. Everything
+else on the machine never even notices it's running.
+
+```
+Without split tunneling:              With Discord Single-Tunneling:
+
+  VPN ON                                Discord.exe / Update.exe
+    |                                            |
+    v                                            v
+  everything slow,                          WireGuard -> VPN
+  Discord unblocked                              |
+                                        everything else, full speed
+  VPN OFF                                        |
+    |                                    Discord unblocked too
+    v
+  everything fast,
+  Discord restricted
+```
+
+## What it does
+
+🔌 Reads any standard WireGuard `.conf` file — works with Proton, Mullvad, or whatever VPN you already have
+🎙️ **Voice, video and screen share included** — not just chat, login and API
+🧠 Auto-downloads and configures [sing-box](https://github.com/SagerNet/sing-box) and the wintun driver, no manual setup
+🖥️ Clean native GUI — no terminal, no console window, ever
+🚀 Just open Discord — no special shortcut, no launch flags
+🛟 **Rolls back on its own** if the tunnel ever breaks your connection, instead of leaving you stranded
+🔁 Follows your adapter — swap Ethernet for Wi-Fi and it keeps working, no reconfiguring
+⚙️ Optional autostart with Windows, hardened against the network not being ready yet at logon
 
 ## What you need
 
@@ -22,7 +63,9 @@ Voice, video and screen share included — not just chat.
   Windscribe and others all export these, and free tiers usually include it.
 - **Discord desktop app** installed.
 
-## Step 1 — Get your WireGuard config file
+## Installing it
+
+### Step 1 — Get your WireGuard config file
 
 Log in to your VPN provider and download a **WireGuard configuration** file.
 It's a small `.conf` text file.
@@ -34,9 +77,10 @@ It's a small `.conf` text file.
 
 Save it somewhere you can find it — your Downloads folder is fine.
 
-> The file contains your private VPN key. Don't share it or commit it anywhere.
+> The file contains your private VPN key. Don't share it or commit it anywhere
+> (this repo's `.gitignore` already blocks that).
 
-## Step 2 — Download the installer
+### Step 2 — Download the installer
 
 Go to the [**Releases**](https://github.com/himingal/discord-tunneling/releases/latest)
 page and download **`DiscordTunneling-Setup.exe`** from the latest release.
@@ -45,7 +89,7 @@ Windows SmartScreen may warn you about an unrecognized publisher, since the
 installer isn't code-signed. Click **More info → Run anyway**, or build it
 yourself from source (see below).
 
-## Step 3 — Install
+### Step 3 — Install
 
 Run `DiscordTunneling-Setup.exe` and click through the wizard
 (Next → Next → Finish). It installs the app and creates a shortcut with a
@@ -53,7 +97,7 @@ Run `DiscordTunneling-Setup.exe` and click through the wizard
 
 Nothing is tunneled yet — the installer only puts the app in place.
 
-## Step 4 — Import your VPN config
+### Step 4 — Import your VPN config
 
 Open **Discord Single-Tunneling** (the gear icon).
 
@@ -71,15 +115,14 @@ your connection is never left broken.
 
 When the status dot turns **green — "Tunnel running"**, you're done.
 
-## Step 5 — Use it
+### Step 5 — Use it
 
 Just open Discord. Any Discord window is routed through the VPN while the
 tunnel is running — the desktop shortcut, the Start Menu, the tray icon, all
 the same.
 
 - You can **close the app window**; the tunnel keeps running in the background.
-- With autostart enabled, the tunnel comes up on its own at every boot, and
-  Discord waits for it before opening.
+- With autostart enabled, the tunnel comes up on its own at every boot.
 - Reopening the app when the tunnel is stopped **starts it again
   automatically** — you don't need to re-import your `.conf`.
 
@@ -131,9 +174,28 @@ layer catches that traffic too.
   automatically** if it isn't — the TUN takes over the default route, so a bad
   config could otherwise take the whole machine offline.
 - Registers autostart as a Scheduled Task that runs elevated and windowless at
-  logon, plus a small waiter that holds Discord until the tunnel is up. This is
-  only registered once the connectivity check passes, so a broken config can't
-  come back at every boot.
+  logon, waits for a real network connection before dialing the VPN (not just
+  a route table entry), and supervises the first 20 seconds — restarting the
+  tunnel if the log shows a dead-endpoint dial instead of leaving a zombie
+  tunnel running all day. Autostart is only registered once the connectivity
+  check passes, so a broken config can't come back at every boot.
+
+## How it is put together
+
+```
+installer.ps1     the whole app — GUI, .conf parsing, config.json generation,
+                   tunnel lifecycle (start/stop/rollback), autostart, the
+                   embedded logon-time launcher script
+setup.iss          Inno Setup script — packages installer.ps1 + assets into
+                   DiscordTunneling-Setup.exe
+assets/            icons (app + gear) and the banner/avatar artwork
+sing-box.exe       downloaded automatically on first run, not shipped
+config.json        generated from your .conf on install, gitignored (holds
+                   your private key)
+```
+
+There's no build step beyond Inno Setup — `installer.ps1` is plain Windows
+PowerShell + WinForms, run directly or wrapped into an installer.
 
 ## Troubleshooting
 
@@ -156,9 +218,11 @@ immediately.
 **I switched from Ethernet to Wi-Fi**
 Nothing to do. The adapter is re-detected every time the tunnel starts.
 
-**Antivirus blocked something**
-New TUN adapters and auto-downloaded executables sometimes get flagged. If
-sing-box won't start, check your AV logs first.
+**Antivirus (especially a company-managed one) blocks it**
+A self-elevating app that creates a virtual network adapter looks exactly like
+what endpoint security is built to catch — that's not a false positive to
+work around. On a managed work PC, use the tool on a personal machine instead
+rather than requesting an exception.
 
 ## Building from source
 
@@ -182,6 +246,7 @@ the same tunnel.
   process name, not by a launch flag, so there's no separate "untunneled"
   Discord on the same PC.
 - **Windows only.** This is a desktop tool and doesn't cover phones.
+- **Managed/corporate antivirus will likely block it** — see Troubleshooting.
 - If you need guaranteed 100% tunneling for non-Discord traffic too, or would
   rather not grant admin rights, run Discord in a lightweight VM with the VPN
   applied to its whole network instead.
